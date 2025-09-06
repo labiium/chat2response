@@ -1,0 +1,16 @@
+# rust-toolchain.toml
+#
+# Purpose:
+# - Pin a minimum supported Rust version (MSRV) for local development and reproducible CI.
+# - Ensure required components (rustfmt, clippy) are available by default.
+#
+# Notes:
+# - CI may additionally test on the latest stable toolchain; this pin guarantees
+#   that the code remains compatible with the declared MSRV.
+# - Developers can temporarily override with `RUSTUP_TOOLCHAIN=stable` or by using
+#   `rustup override set <toolchain>` in their workspace if needed.
+
+[toolchain]
+channel = "1.82.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
