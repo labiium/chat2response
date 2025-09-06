@@ -33,10 +33,3 @@ fn router_builds_with_proxy_feature() {
     let app = build_router();
     assert_send(app);
 }
-
-// MCP is always compiled; ensure the crate builds alongside the HTTP server.
-#[test]
-fn router_builds_with_mcp_feature() {
-    let app = build_router();
-    assert_send(app);
-}

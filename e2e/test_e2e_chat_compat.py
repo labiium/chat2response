@@ -87,8 +87,7 @@ def _spawn_server(
     for k in ("BIND_ADDR", "OPENAI_API_KEY", "OPENAI_BASE_URL"):
         env.pop(k, None)
     env["RUST_LOG"] = dotenv_vars.get("RUST_LOG", "info")
-    # Force HTTP mode (not MCP)
-    env.pop("CHAT2RESPONSE_MCP", None)
+
     if additional_env:
         env.update(additional_env)
 

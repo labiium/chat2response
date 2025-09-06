@@ -184,7 +184,7 @@ def _spawn_chat2response(base_port: int, mock_port: int) -> tuple[subprocess.Pop
     env.pop("BIND_ADDR", None)
     env.pop("OPENAI_API_KEY", None)
     env.pop("OPENAI_BASE_URL", None)
-    env.pop("CHAT2RESPONSE_MCP", None)
+
 
     cmd = [
         "cargo",

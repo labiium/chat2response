@@ -7,7 +7,6 @@ Translate OpenAI Chat Completions requests into Responses API payloads and proxy
 Crate highlights
 - Library: pure conversion via `to_responses_request(&ChatCompletionRequest, Option<String>)`.
 - HTTP server (in `server`): `/convert` and `/proxy` (always available; proxy forwards to `OPENAI_BASE_URL`).
-- MCP stdio server: always available; exposes "convert" and "proxy" tools over stdio.
 - Models: minimal but robust request models for Chat Completions and Responses APIs.
 
 Modules

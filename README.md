@@ -1,9 +1,7 @@
 # Chat2Response
 
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE) [![Rust Edition: 2021](https://img.shields.io/badge/Rust-2021-orange.svg)](https://www.rust-lang.org/)
-[Repository](https://github.com/labiium/chat2response) • [Issues](https://github.com/labiium/chat2response/issues) • [Contributing (PR checklist)](CONTRIBUTING.md#tldr--contributor-checklist) • [Security](SECURITY.md) • [Code of Conduct](CODE_OF_CONDUCT.md) • [License](LICENSE)
-
-For pull requests, see the basic PR checklist in Contributing.
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE) [![Rust Edition: 2021]
+[License](LICENSE)
 
 Translate OpenAI Chat Completions requests into the Responses API format. By default, the built-in proxy forwards those converted requests to OpenAI’s Responses endpoint (including streaming). Optionally, you can enable a Chat Completions upstream compatibility mode by setting UPSTREAM_MODE=chat (or chat-completions, or CHAT2RESPONSE_UPSTREAM=chat), which rewrites the upstream to /chat/completions and adapts the payload shape.
 
@@ -60,8 +58,7 @@ Notes
   - Same input as /convert, but forwards the converted request to OpenAI’s Responses endpoint and returns the native output. Supports streaming passthrough (SSE).
 - Library API
   - chat2response::to_responses_request(...) converts in-process without any server.
-- MCP stdio server (always included)
-  - Exposes two tools to MCP clients: convert and proxy.
+
 
 Design
 - Axum + tokio for HTTP; reqwest for outbound; serde for models; tower-http for CORS/logging; tracing for logs.
@@ -107,20 +104,6 @@ OPENAI_API_KEY=sk-... cargo run --release
 
 # Optional: override base URL
 OPENAI_BASE_URL=https://api.openai.com/v1 OPENAI_API_KEY=sk-... cargo run --release
-```
-
-MCP stdio server
-
-```/dev/null/terminal.sh#L1-12
-# Converter-only MCP (stdio)
-CHAT2RESPONSE_MCP=1 cargo run --release
-
-# MCP + Proxy (needs OPENAI_API_KEY)
-CHAT2RESPONSE_MCP=1 OPENAI_API_KEY=sk-... cargo run --release
-
-# Example Claude desktop config (conceptual):
-# { "mcpServers": { "chat2response": { "command": "/abs/path/to/chat2response",
-#   "env": { "CHAT2RESPONSE_MCP": "1", "OPENAI_API_KEY": "sk-..." }, "args": [] } } }
 ```
 
 ----------------------------------------------------------------
@@ -215,7 +198,7 @@ Configuration
 
 Environment variables
 - BIND_ADDR: default 0.0.0.0:8088
-- OPENAI_API_KEY: required for /proxy (or MCP proxy tool)
+- OPENAI_API_KEY: required for /proxy
 - OPENAI_BASE_URL: default https://api.openai.com/v1
 - UPSTREAM_MODE: default "responses"; set to "chat" or "chat-completions" to forward upstream to the Chat Completions endpoint (/chat/completions) with payload adaptation
 - CHAT2RESPONSE_UPSTREAM: alias of UPSTREAM_MODE
@@ -279,7 +262,6 @@ Security
 
 - Do not embed API keys in code or commit history.
 - In multi-tenant scenarios, place the proxy behind your own auth and rate limits; consider per-tenant credentials and audit logging.
-- For MCP mode, the proxy tool requires OPENAI_API_KEY in the environment or a secure secret source.
 
 ----------------------------------------------------------------
 
