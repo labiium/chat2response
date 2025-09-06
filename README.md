@@ -1,7 +1,6 @@
 # Chat2Response
 
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE) [![Rust Edition: 2021]
-[License](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 Translate OpenAI Chat Completions requests into the Responses API format. By default, the built-in proxy forwards those converted requests to OpenAI’s Responses endpoint (including streaming). Optionally, you can enable a Chat Completions upstream compatibility mode by setting UPSTREAM_MODE=chat (or chat-completions, or CHAT2RESPONSE_UPSTREAM=chat), which rewrites the upstream to /chat/completions and adapts the payload shape.
 
