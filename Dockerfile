@@ -14,18 +14,21 @@ RUN apt-get update \
 COPY Cargo.toml Cargo.lock ./
 # Copy sources
 COPY src ./src
-# Optional examples/docs (not required for build, but harmless)
-COPY README.md mcp.json.example . 2>/dev/null || true
+
 
 # Build release binary and strip symbols to reduce size
-RUN cargo build --release \
+RUN cargo build --release --locked \
     && strip target/release/chat2response
 
 # ---------- Runtime stage ----------
 FROM debian:bookworm-slim AS runtime
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
 
 # Create non-root user and prepare runtime packages
 RUN useradd -u 10001 -ms /bin/bash app \
+    && ln -fs /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone \
     && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/* \
