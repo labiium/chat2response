@@ -180,10 +180,35 @@ def call_openai_responses_direct(
                 obj = resp.parse()
                 data = _model_to_dict(obj)
             else:
-                # fallback read + json
-                raw = resp.read()
-                text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
-                data = json.loads(text)
+                # Fallback: robustly obtain text across SDK variants without relying on .read()
+                raw_text = None
+                # Try common string-bearing attributes
+                if hasattr(resp, "text"):
+                    try:
+                        raw_text = resp.text if not callable(resp.text) else resp.text()
+                    except Exception:
+                        raw_text = None
+                # Try byte-bearing attributes next
+                if raw_text is None:
+                    raw_bytes = None
+                    for attr in ("content", "body"):
+                        if hasattr(resp, attr):
+                            try:
+                                candidate = getattr(resp, attr)
+                                raw_bytes = candidate() if callable(candidate) else candidate
+                            except Exception:
+                                raw_bytes = None
+                            if raw_bytes is not None:
+                                break
+                    if isinstance(raw_bytes, (bytes, bytearray)):
+                        raw_text = raw_bytes.decode("utf-8", errors="replace")
+                # Final fallback: stringification
+                if raw_text is None:
+                    raw_text = str(resp)
+                try:
+                    data = json.loads(raw_text) if isinstance(raw_text, str) else {}
+                except Exception:
+                    data = {"raw": raw_text}
         else:
             obj = client.responses.create(model=model, input=prompt)
             data = _model_to_dict(obj)
@@ -214,7 +239,13 @@ def call_chat2response_convert(
 
     _eprint(f"POST {url} ...")
     try:
-        r = requests.post(url, params=params, json=payload, timeout=timeout)
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        headers: Dict[str, str] = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        else:
+            _eprint("Note: OPENAI_API_KEY not set; sending request without Authorization header.")
+        r = requests.post(url, params=params, json=payload, headers=headers if headers else None, timeout=timeout)
         r.raise_for_status()
     except Exception as e:
         _eprint(f"/convert error: {e}")
@@ -254,7 +285,13 @@ def call_chat2response_proxy(
         # If stream=True, we still rely on server semantics:
         # - The current Chat2Response buffers SSE and returns the entire SSE body at once.
         # We'll request a streaming response from requests and print lines as they arrive.
-        r = requests.post(url, params=params, json=payload, timeout=timeout, stream=stream)
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        headers: Dict[str, str] = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        else:
+            _eprint("Note: OPENAI_API_KEY not set; sending request without Authorization header.")
+        r = requests.post(url, params=params, json=payload, headers=headers if headers else None, timeout=timeout, stream=stream)
         r.raise_for_status()
     except Exception as e:
         _eprint(f"/proxy error: {e}")
