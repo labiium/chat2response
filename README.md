@@ -1,51 +1,64 @@
 # Chat2Response
 
-## CLI Usage
-
-Run the server:
-./target/release/chat2response [mcp.json] [--keys-backend=redis://...|sled:<path>|memory]
-
-- mcp.json positional: if provided as the first non-flag argument, the server loads and connects to MCP servers defined in that file.
-- --keys-backend: selects the API key storage backend at runtime:
-  - redis://... uses Redis with an r2d2 connection pool (pool size via CHAT2RESPONSE_REDIS_POOL_MAX).
-  - sled:<path> uses an embedded sled database at the given path.
-  - memory uses an in-memory, non-persistent store.
-
-Backend precedence (highest to lowest):
-1) --keys-backend=... (CLI)
-2) CHAT2RESPONSE_REDIS_URL (if set, Redis is used)
-3) sled (embedded; used when no Redis URL is provided)
-4) memory (fallback)
-
-Examples:
-- Basic server (no MCP):
-  ./target/release/chat2response
-- With MCP configuration file:
-  ./target/release/chat2response mcp.json
-- Use Redis explicitly (CLI overrides env):
-  ./target/release/chat2response --keys-backend=redis://127.0.0.1/
-- Use sled at a custom path:
-  ./target/release/chat2response --keys-backend=sled:./data/keys.db
-- Force in-memory store (useful for demos/tests):
-  ./target/release/chat2response --keys-backend=memory
-- With environment variables:
-  CHAT2RESPONSE_REDIS_URL=redis://127.0.0.1/ ./target/release/chat2response
-
-
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-**Convert OpenAI Chat Completions requests to the new Responses API format**
+Convert OpenAI Chat Completions requests to the new Responses API format.
 
 Chat2Response bridges the gap between OpenAI's legacy Chat Completions API and the powerful new Responses API. Get all the benefits of the modern API without rewriting your existing Chat Completions code.
 
+## CLI Usage
+
+Run the server:
+```bash
+./target/release/chat2response [mcp.json] [--keys-backend=redis://...|sled:<path>|memory]
+```
+
+- `mcp.json` positional: if provided as the first non-flag argument, the server loads and connects to MCP servers defined in that file.
+- `--keys-backend`: selects the API key storage backend at runtime:
+  - `redis://...` uses Redis with an r2d2 connection pool (pool size via `CHAT2RESPONSE_REDIS_POOL_MAX`).
+  - `sled:<path>` uses an embedded sled database at the given path.
+  - `memory` uses an in-memory, non-persistent store.
+
+Backend precedence (highest to lowest):
+1) `--keys-backend=...` (CLI)
+2) `CHAT2RESPONSE_REDIS_URL` (if set, Redis is used)
+3) `sled` (embedded; used when no Redis URL is provided)
+4) `memory` (fallback)
+
+Examples:
+- Basic server (no MCP):
+```bash
+./target/release/chat2response
+```
+- With MCP configuration file:
+```bash
+./target/release/chat2response mcp.json
+```
+- Use Redis explicitly (CLI overrides env):
+```bash
+./target/release/chat2response --keys-backend=redis://127.0.0.1/
+```
+- Use sled at a custom path:
+```bash
+./target/release/chat2response --keys-backend=sled:./data/keys.db
+```
+- Force in-memory store (useful for demos/tests):
+```bash
+./target/release/chat2response --keys-backend=memory
+```
+- With environment variables:
+```bash
+CHAT2RESPONSE_REDIS_URL=redis://127.0.0.1/ ./target/release/chat2response
+```
+
 ## Why Use This?
 
-**🔄 Easy Migration** - Keep your existing Chat Completions code, get Responses API benefits  
-**⚡ Better Streaming** - Improved streaming with typed events and tool traces  
-**🎯 Unified Interface** - Handle text, tools, and multimodal inputs consistently  
-**🚀 Lightweight** - Single binary with minimal resource usage  
-**🏗️ vLLM & Local Models** - Add Responses API support to vLLM, Ollama, and other providers  
-**🔧 MCP Integration** - Connect to Model Context Protocol servers for enhanced tool capabilities  
+- Easy migration: keep your Chat Completions code, get Responses API benefits
+- Better streaming with typed events and tool traces
+- Unified interface for text, tools, and multimodal inputs
+- Lightweight single binary
+- Add Responses API support to vLLM, Ollama, and other providers
+- MCP integration for enhanced tool capabilities
 
 ## Quick Start
 
@@ -64,7 +77,7 @@ OPENAI_API_KEY=sk-your-key ./target/release/chat2response
 OPENAI_API_KEY=sk-your-key ./target/release/chat2response mcp.json
 ```
 
-Server runs at `http://localhost:8088`
+Server runs at `http://localhost:8088`.
 
 ### Convert Only (No API Calls)
 
@@ -95,13 +108,13 @@ Converts your request and forwards it to OpenAI's Responses endpoint.
 
 ## Key Features
 
-### 🔄 Automatic Conversion
+### Automatic Conversion
 - `messages` → Responses format
-- `max_tokens` → `max_output_tokens`  
+- `max_tokens` → `max_output_tokens`
 - `tools` → Responses tool schema
 - All parameters mapped correctly
 
-### 📡 Streaming Support
+### Streaming Support
 Get real-time responses with proper event types:
 ```bash
 # Streaming works out of the box
@@ -110,7 +123,7 @@ curl -N http://localhost:8088/proxy \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Stream this"}],"stream":true}'
 ```
 
-### 📚 Library Usage
+### Library Usage
 Use as a Rust library for in-process conversion:
 
 ```rust
@@ -171,7 +184,7 @@ CHAT2RESPONSE_KEYS_DEFAULT_TTL_SECONDS=86400     # Default TTL (seconds) used if
 
 ### API Key Policy
 - Tokens are opaque: `sk_<id>.<secret>` (ID is 32 hex chars, secret is 64 hex chars).
-- Secrets are never stored; verification uses salted SHA-256(salt || secret) with constant-time compare.
+- Secrets are never stored; verification uses salted `SHA-256(salt || secret)` with constant-time compare.
 - By default, expiration is required at creation (`CHAT2RESPONSE_KEYS_REQUIRE_EXPIRATION=1`), using either `ttl_seconds` or `expires_at`. You can allow non-expiring keys only if `CHAT2RESPONSE_KEYS_ALLOW_NO_EXPIRATION=1`.
 - A default TTL can be set via `CHAT2RESPONSE_KEYS_DEFAULT_TTL_SECONDS`.
 
@@ -180,8 +193,8 @@ CHAT2RESPONSE_KEYS_DEFAULT_TTL_SECONDS=86400     # Default TTL (seconds) used if
 | Endpoint | Purpose | Requires API Key |
 |----------|---------|------------------|
 | `POST /convert` | Convert request format only | No |
-| `POST /proxy` | Convert + forward to OpenAI | Yes (X-API-Key) |
-| `GET /keys` | List API keys (id, label, created_at, expires_at, revoked_at, scopes) | No (protect via network ACL) |
+| `POST /proxy` | Convert + forward to OpenAI | Yes (`X-API-Key`) |
+| `GET /keys` | List API keys (`id`, `label`, `created_at`, `expires_at`, `revoked_at`, `scopes`) | No (protect via network ACL) |
 | `POST /keys/generate` | Create a new API key; body supports `label`, `ttl_seconds` or `expires_at`, and `scopes` | No (protect via network ACL) |
 | `POST /keys/revoke` | Revoke an API key; body: `{ "id": "<key-id>" }` | No (protect via network ACL) |
 | `POST /keys/set_expiration` | Set/clear expiration; body: `{ "id": "...", "expires_at": <epoch>|null, "ttl_seconds": <u64> }` | No (protect via network ACL) |
@@ -194,12 +207,12 @@ Both endpoints accept standard Chat Completions JSON and support `?conversation_
 
 ## Chat vs Responses API
 
-**Chat Completions (Legacy)**
-- Stateless - send full history each time
+Chat Completions (Legacy)
+- Stateless — send full history each time
 - Limited streaming events
 - Client manages conversation state
 
-**Responses API (Modern)** 
+Responses API (Modern)
 - Optional server-side conversation state
 - Rich streaming with typed events
 - Unified tool and multimodal handling
@@ -209,12 +222,12 @@ Chat2Response lets you get Responses API benefits while keeping your existing Ch
 
 ## Use with vLLM, Ollama & Local Models
 
-Many popular inference servers only support Chat Completions API:
-- **vLLM** - High-performance inference server
-- **Ollama** - Local model runner  
-- **Text Generation WebUI** - Popular local interface
-- **FastChat** - Multi-model serving
-- **LocalAI** - Local OpenAI alternative
+Many popular inference servers only support the Chat Completions API:
+- vLLM — High-performance inference server
+- Ollama — Local model runner
+- Text Generation WebUI — Popular local interface
+- FastChat — Multi-model serving
+- LocalAI — Local OpenAI alternative
 
 Place Chat2Response in front of these services to instantly add Responses API support:
 
@@ -225,7 +238,7 @@ UPSTREAM_MODE=chat \
 ./target/release/chat2response
 ```
 
-Now your local models support the modern Responses API format! Your applications get better streaming, tool traces, and conversation state while your local inference server keeps running unchanged.
+Now your local models support the modern Responses API format. Your applications get better streaming, tool traces, and conversation state while your local inference server keeps running unchanged.
 
 ## MCP Integration
 
@@ -233,7 +246,7 @@ Chat2Response can connect to Model Context Protocol (MCP) servers to provide add
 
 ### Setting up MCP
 
-1. **Create an MCP configuration file** (`mcp.json`):
+1) Create an MCP configuration file (`mcp.json`):
 
 ```json
 {
@@ -260,26 +273,26 @@ Chat2Response can connect to Model Context Protocol (MCP) servers to provide add
 }
 ```
 
-2. **Start the server with MCP support**:
+2) Start the server with MCP support:
 
 ```bash
 OPENAI_BASE_URL=https://api.openai.com/v1 ./target/release/chat2response mcp.json
 ```
 
-3. **Available MCP Servers**:
-   - `@modelcontextprotocol/server-filesystem` - File system operations
-   - `@modelcontextprotocol/server-brave-search` - Web search via Brave
-   - `@modelcontextprotocol/server-postgres` - PostgreSQL database access
-   - `@modelcontextprotocol/server-github` - GitHub API integration
-   - Many more available on npm
+3) Available MCP Servers:
+- `@modelcontextprotocol/server-filesystem` — File system operations
+- `@modelcontextprotocol/server-brave-search` — Web search via Brave
+- `@modelcontextprotocol/server-postgres` — PostgreSQL database access
+- `@modelcontextprotocol/server-github` — GitHub API integration
+- Many more available on npm
 
 ### How MCP Tools Work
 
-- MCP tools are automatically discovered and added to the available tool list
-- Tool names are prefixed with the server name (e.g., `filesystem_read_file`)
-- The LLM can call MCP tools just like regular function tools
-- Tool execution happens automatically and results are injected into the conversation
-- Multiple MCP servers can run simultaneously
+- MCP tools are automatically discovered and added to the available tool list.
+- Tool names are prefixed with the server name (e.g., `filesystem_read_file`).
+- The LLM can call MCP tools just like regular function tools.
+- Tool execution happens automatically and results are injected into the conversation.
+- Multiple MCP servers can run simultaneously.
 
 ### Example Request with MCP Tools
 
@@ -300,14 +313,14 @@ The LLM will automatically have access to both `brave-search_search` and `filesy
 
 ## Installation
 
-**From Source:**
+From source:
 ```bash
 git clone https://github.com/labiium/chat2response
 cd chat2response
 cargo build --release
 ```
 
-**As Library:**
+As a library:
 ```toml
 [dependencies]
 chat2response = "0.1"
@@ -335,7 +348,7 @@ pip install -r e2e/requirements.txt
 pytest e2e/
 ```
 
-### Manual API key flows
+### Manual API Key Flows
 
 ```bash
 # Generate a key (1-day TTL)
