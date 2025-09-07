@@ -37,6 +37,10 @@ pub fn build_router_with_state(app_state: AppState) -> Router {
     let router = Router::new()
         .route("/status", get(status))
         .route("/convert", post(convert))
+        .route("/keys", get(list_keys))
+        .route("/keys/generate", post(generate_key))
+        .route("/keys/revoke", post(revoke_key))
+        .route("/keys/set_expiration", post(set_key_expiration))
         .with_state(state.clone());
 
     let router = router.route("/proxy", post(proxy)).with_state(state);
@@ -47,7 +51,15 @@ pub fn build_router_with_state(app_state: AppState) -> Router {
 /// Service status endpoint to expose feature flags and available routes.
 async fn status() -> impl IntoResponse {
     let proxy_enabled: bool = true;
-    let routes = vec!["/status", "/convert", "/proxy"];
+    let routes = vec![
+        "/status",
+        "/convert",
+        "/proxy",
+        "/keys",
+        "/keys/generate",
+        "/keys/revoke",
+        "/keys/set_expiration",
+    ];
     Json(serde_json::json!({
         "name": "chat2response",
         "version": env!("CARGO_PKG_VERSION"),
@@ -76,6 +88,36 @@ async fn proxy(
     headers: HeaderMap,
     Json(mut req): Json<ChatCompletionRequest>,
 ) -> Response {
+    // Enforce API key if configured (X-API-Key header, optionally with Bearer scheme)
+    if let Some(manager) = &state.api_keys {
+        let token_hdr = headers
+            .get("x-api-key")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.trim().to_string());
+        let token_opt = token_hdr.as_deref().map(|s| {
+            if s.len() >= 7 && s[..6].eq_ignore_ascii_case("bearer") {
+                s[6..].trim()
+            } else {
+                s
+            }
+        });
+        match token_opt.map(|t| manager.verify(t)) {
+            Some(crate::auth::Verification::Valid { .. }) => {}
+            Some(crate::auth::Verification::Revoked { .. }) => {
+                return error_response(axum::http::StatusCode::UNAUTHORIZED, "API key revoked");
+            }
+            Some(crate::auth::Verification::Expired { .. }) => {
+                return error_response(axum::http::StatusCode::UNAUTHORIZED, "API key expired");
+            }
+            Some(_) => {
+                return error_response(axum::http::StatusCode::UNAUTHORIZED, "Invalid API key");
+            }
+            None => {
+                return error_response(axum::http::StatusCode::UNAUTHORIZED, "Missing API key");
+            }
+        }
+    }
+
     // Handle MCP tool calls if present
     if let Err(e) = handle_mcp_tool_calls(&mut req, &state).await {
         return error_response(
@@ -142,6 +184,168 @@ async fn proxy(
             Ok(resp) => resp,
             Err(e) => error_response(axum::http::StatusCode::BAD_GATEWAY, &e.to_string()),
         }
+    }
+}
+
+// API key management endpoints
+#[derive(Debug, Deserialize)]
+struct GenerateKeyRequest {
+    label: Option<String>,
+    ttl_seconds: Option<u64>,
+    expires_at: Option<u64>,
+    scopes: Option<Vec<String>>,
+}
+
+async fn generate_key(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<GenerateKeyRequest>,
+) -> axum::response::Response {
+    // Env flag to require expiration at creation
+    let require_exp = std::env::var("CHAT2RESPONSE_KEYS_REQUIRE_EXPIRATION")
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "yes" || v == "on"
+        })
+        .unwrap_or(false);
+
+    // Optional default TTL (seconds) from env
+    let default_ttl_secs: Option<u64> = std::env::var("CHAT2RESPONSE_KEYS_DEFAULT_TTL_SECONDS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok());
+
+    // Compute effective ttl_seconds from either expires_at or ttl_seconds or default
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Determine ttl based on precedence: expires_at > ttl_seconds > env default
+    let ttl_seconds = if let Some(exp) = payload.expires_at {
+        if exp <= now {
+            return error_response(
+                axum::http::StatusCode::BAD_REQUEST,
+                "expires_at must be in the future",
+            );
+        }
+        Some(exp.saturating_sub(now))
+    } else if let Some(ttl) = payload.ttl_seconds {
+        Some(ttl)
+    } else {
+        default_ttl_secs
+    };
+
+    // If required, enforce at least some ttl
+    if require_exp && ttl_seconds.is_none() {
+        return error_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            "Expiration required: provide expires_at or ttl_seconds (or configure default TTL)",
+        );
+    }
+
+    match &state.api_keys {
+        Some(mgr) => match mgr.generate_key(
+            payload.label,
+            ttl_seconds.map(std::time::Duration::from_secs),
+            payload.scopes,
+        ) {
+            Ok(gen) => Json(gen).into_response(),
+            Err(e) => error_response(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("failed to generate key: {}", e),
+            ),
+        },
+        None => error_response(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "API key manager unavailable",
+        ),
+    }
+}
+
+async fn list_keys(State(state): State<Arc<AppState>>) -> axum::response::Response {
+    match &state.api_keys {
+        Some(mgr) => match mgr.list_keys() {
+            Ok(items) => Json(items).into_response(),
+            Err(e) => error_response(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("failed to list keys: {}", e),
+            ),
+        },
+        None => error_response(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "API key manager unavailable",
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RevokeKeyRequest {
+    id: String,
+}
+
+async fn revoke_key(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<RevokeKeyRequest>,
+) -> axum::response::Response {
+    match &state.api_keys {
+        Some(mgr) => match mgr.revoke(&payload.id) {
+            Ok(true) => {
+                Json(serde_json::json!({ "revoked": true, "id": payload.id })).into_response()
+            }
+            Ok(false) => {
+                Json(serde_json::json!({ "revoked": false, "id": payload.id })).into_response()
+            }
+            Err(e) => error_response(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("failed to revoke: {}", e),
+            ),
+        },
+        None => error_response(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "API key manager unavailable",
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SetExpirationRequest {
+    id: String,
+    expires_at: Option<u64>,
+    ttl_seconds: Option<u64>,
+}
+
+async fn set_key_expiration(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<SetExpirationRequest>,
+) -> axum::response::Response {
+    let new_exp = if let Some(at) = payload.expires_at {
+        Some(at)
+    } else if let Some(ttl) = payload.ttl_seconds {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        Some(now.saturating_add(ttl))
+    } else {
+        None
+    };
+    match &state.api_keys {
+        Some(mgr) => match mgr.set_expiration(&payload.id, new_exp) {
+            Ok(true) => Json(
+                serde_json::json!({ "updated": true, "id": payload.id, "expires_at": new_exp }),
+            )
+            .into_response(),
+            Ok(false) => {
+                Json(serde_json::json!({ "updated": false, "id": payload.id })).into_response()
+            }
+            Err(e) => error_response(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("failed to set expiration: {}", e),
+            ),
+        },
+        None => error_response(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "API key manager unavailable",
+        ),
     }
 }
 

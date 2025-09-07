@@ -77,3 +77,4 @@ tags
 *.log
 nohup.out
 tmp/
+data/

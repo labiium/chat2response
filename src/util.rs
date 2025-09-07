@@ -107,13 +107,90 @@ pub fn env_bind_addr() -> String {
 pub struct AppState {
     pub http: reqwest::Client,
     pub mcp_manager: Option<std::sync::Arc<crate::mcp_client::McpClientManager>>,
+    /// Optional API key manager for inbound auth (generation/expiration/revocation handled in crate::auth)
+    pub api_keys: Option<std::sync::Arc<crate::auth::ApiKeyManager>>,
+}
+
+/// Build an HTTP client honoring proxy and timeout environment variables.
+///
+/// Environment:
+/// - CHAT2RESPONSE_NO_PROXY = 1|true|yes|on  -> disable all proxies
+/// - CHAT2RESPONSE_PROXY_URL = <url>         -> proxy for all schemes
+/// - HTTP_PROXY / http_proxy                 -> HTTP proxy
+/// - HTTPS_PROXY / https_proxy               -> HTTPS proxy
+/// - CHAT2RESPONSE_HTTP_TIMEOUT_SECONDS      -> overall request timeout (u64)
+pub fn build_http_client_from_env() -> reqwest::Client {
+    let mut builder = reqwest::Client::builder();
+
+    // Optional timeout
+    if let Ok(secs) = std::env::var("CHAT2RESPONSE_HTTP_TIMEOUT_SECONDS") {
+        if let Ok(n) = secs.trim().parse::<u64>() {
+            builder = builder.timeout(std::time::Duration::from_secs(n));
+        }
+    }
+
+    // Proxy configuration
+    let no_proxy = std::env::var("CHAT2RESPONSE_NO_PROXY")
+        .map(|v| v.trim().to_ascii_lowercase())
+        .map(|v| v == "1" || v == "true" || v == "yes" || v == "on")
+        .unwrap_or(false);
+
+    if no_proxy {
+        builder = builder.no_proxy();
+    } else {
+        // All-scheme proxy
+        if let Ok(url) = std::env::var("CHAT2RESPONSE_PROXY_URL") {
+            let u = url.trim();
+            if !u.is_empty() {
+                if let Ok(p) = reqwest::Proxy::all(u) {
+                    builder = builder.proxy(p);
+                }
+            }
+        }
+        // Scheme-specific proxies
+        if let Ok(http_p) = std::env::var("HTTP_PROXY").or_else(|_| std::env::var("http_proxy")) {
+            let u = http_p.trim();
+            if !u.is_empty() {
+                if let Ok(p) = reqwest::Proxy::http(u) {
+                    builder = builder.proxy(p);
+                }
+            }
+        }
+        if let Ok(https_p) = std::env::var("HTTPS_PROXY").or_else(|_| std::env::var("https_proxy"))
+        {
+            let u = https_p.trim();
+            if !u.is_empty() {
+                if let Ok(p) = reqwest::Proxy::https(u) {
+                    builder = builder.proxy(p);
+                }
+            }
+        }
+    }
+
+    // User-Agent for observability
+    builder = builder.user_agent(format!("chat2response/{}", env!("CARGO_PKG_VERSION")));
+
+    builder.build().unwrap_or_else(|_| reqwest::Client::new())
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: build_http_client_from_env(),
             mcp_manager: None,
+            api_keys: (|| {
+                if let Ok(url) = std::env::var("CHAT2RESPONSE_REDIS_URL") {
+                    let u = url.trim().to_string();
+                    if !u.is_empty() {
+                        if let Ok(m) = crate::auth::ApiKeyManager::new_with_redis_url(&u) {
+                            return Some(std::sync::Arc::new(m));
+                        }
+                    }
+                }
+                crate::auth::ApiKeyManager::new_default()
+                    .ok()
+                    .map(std::sync::Arc::new)
+            })(),
         }
     }
 }
@@ -122,8 +199,21 @@ impl AppState {
     /// Create AppState with MCP manager
     pub fn with_mcp_manager(mcp_manager: crate::mcp_client::McpClientManager) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: build_http_client_from_env(),
             mcp_manager: Some(std::sync::Arc::new(mcp_manager)),
+            api_keys: (|| {
+                if let Ok(url) = std::env::var("CHAT2RESPONSE_REDIS_URL") {
+                    let u = url.trim().to_string();
+                    if !u.is_empty() {
+                        if let Ok(m) = crate::auth::ApiKeyManager::new_with_redis_url(&u) {
+                            return Some(std::sync::Arc::new(m));
+                        }
+                    }
+                }
+                crate::auth::ApiKeyManager::new_default()
+                    .ok()
+                    .map(std::sync::Arc::new)
+            })(),
         }
     }
 
@@ -132,13 +222,40 @@ impl AppState {
         mcp_manager: std::sync::Arc<crate::mcp_client::McpClientManager>,
     ) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: build_http_client_from_env(),
             mcp_manager: Some(mcp_manager),
+            api_keys: (|| {
+                if let Ok(url) = std::env::var("CHAT2RESPONSE_REDIS_URL") {
+                    let u = url.trim().to_string();
+                    if !u.is_empty() {
+                        if let Ok(m) = crate::auth::ApiKeyManager::new_with_redis_url(&u) {
+                            return Some(std::sync::Arc::new(m));
+                        }
+                    }
+                }
+                crate::auth::ApiKeyManager::new_default()
+                    .ok()
+                    .map(std::sync::Arc::new)
+            })(),
         }
     }
     /// Read the OpenAI API key from environment if present. Optional for /proxy.
     pub fn api_key(&self) -> String {
         std::env::var("OPENAI_API_KEY").unwrap_or_default()
+    }
+
+    /// Verify incoming Authorization: Bearer header against the API key manager (if configured).
+    /// Returns None if no manager was configured.
+    pub fn verify_bearer_header(
+        &self,
+        headers: &http::HeaderMap,
+    ) -> Option<crate::auth::Verification> {
+        let auth = headers
+            .get(http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok());
+        self.api_keys
+            .as_ref()
+            .map(|m| crate::auth::verify_bearer(m.as_ref(), auth))
     }
 }
 
@@ -377,6 +494,24 @@ pub async fn post_responses_with_input_retry(
     let status2 = second.status();
     let bytes2 = second.bytes().await.unwrap_or_default();
     Ok((status2, bytes2).into_response())
+}
+
+/// Simple HTTP GET helper supporting optional Bearer auth and proxy (via provided client).
+pub async fn http_get_with_bearer(
+    client: &reqwest::Client,
+    url: &str,
+    bearer: Option<&str>,
+) -> Result<Response, anyhow::Error> {
+    let mut rb = client.get(url);
+    if let Some(tok) = bearer {
+        if !tok.is_empty() {
+            rb = rb.bearer_auth(tok);
+        }
+    }
+    let resp = rb.send().await?;
+    let status = resp.status();
+    let bytes = resp.bytes().await.unwrap_or_default();
+    Ok((status, bytes).into_response())
 }
 
 pub async fn sse_proxy_stream_with_bearer(

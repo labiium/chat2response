@@ -1,5 +1,37 @@
 # Chat2Response
 
+## CLI Usage
+
+Run the server:
+./target/release/chat2response [mcp.json] [--keys-backend=redis://...|sled:<path>|memory]
+
+- mcp.json positional: if provided as the first non-flag argument, the server loads and connects to MCP servers defined in that file.
+- --keys-backend: selects the API key storage backend at runtime:
+  - redis://... uses Redis with an r2d2 connection pool (pool size via CHAT2RESPONSE_REDIS_POOL_MAX).
+  - sled:<path> uses an embedded sled database at the given path.
+  - memory uses an in-memory, non-persistent store.
+
+Backend precedence (highest to lowest):
+1) --keys-backend=... (CLI)
+2) CHAT2RESPONSE_REDIS_URL (if set, Redis is used)
+3) sled (embedded; used when no Redis URL is provided)
+4) memory (fallback)
+
+Examples:
+- Basic server (no MCP):
+  ./target/release/chat2response
+- With MCP configuration file:
+  ./target/release/chat2response mcp.json
+- Use Redis explicitly (CLI overrides env):
+  ./target/release/chat2response --keys-backend=redis://127.0.0.1/
+- Use sled at a custom path:
+  ./target/release/chat2response --keys-backend=sled:./data/keys.db
+- Force in-memory store (useful for demos/tests):
+  ./target/release/chat2response --keys-backend=memory
+- With environment variables:
+  CHAT2RESPONSE_REDIS_URL=redis://127.0.0.1/ ./target/release/chat2response
+
+
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 **Convert OpenAI Chat Completions requests to the new Responses API format**
@@ -95,20 +127,68 @@ Set these environment variables:
 
 ```bash
 # Required
-OPENAI_BASE_URL=https://api.openai.com/v1  # Upstream base URL (mandatory)
+OPENAI_BASE_URL=https://api.openai.com/v1        # Upstream base URL (mandatory)
 
-# Optional settings
-OPENAI_API_KEY=sk-your-key                 # Used if Authorization header is not provided
-BIND_ADDR=0.0.0.0:8088                     # Server address
-UPSTREAM_MODE=responses                    # Use "chat" for Chat Completions upstream
+# Optional (Upstream behavior)
+OPENAI_API_KEY=sk-your-key                       # Used if Authorization header is not provided
+BIND_ADDR=0.0.0.0:8088                           # Server address
+UPSTREAM_MODE=responses                          # "responses" (default) or "chat" for Chat Completions upstream
+CHAT2RESPONSE_UPSTREAM_INPUT=0                   # If 1/true, derive and send top-level "input" when upstream requires it
+
+# Optional (Proxy/network)
+CHAT2RESPONSE_PROXY_URL=                         # Proxy for all schemes (e.g., http://user:pass@host:port)
+HTTP_PROXY=                                      # Standard env var for HTTP proxy
+HTTPS_PROXY=                                     # Standard env var for HTTPS proxy
+CHAT2RESPONSE_NO_PROXY=0                         # If 1/true, disable all proxy usage
+CHAT2RESPONSE_HTTP_TIMEOUT_SECONDS=60            # Global HTTP client timeout (seconds)
+
+# Optional (CORS)
+CORS_ALLOWED_ORIGINS=*                           # "*" or comma-separated origins
+CORS_ALLOWED_METHODS=*                           # "*" or comma-separated (GET,POST,...)
+CORS_ALLOWED_HEADERS=*                           # "*" or comma-separated header names
+CORS_ALLOW_CREDENTIALS=0                         # If 1/true, allow credentials
+CORS_MAX_AGE=3600                                # Preflight max-age (seconds)
+
+# Optional (API key management & auth)
+# Backend selection is runtime-based:
+# - If CHAT2RESPONSE_REDIS_URL is set, Redis is used (r2d2 pool).
+# - Else, if built with the `sled` feature, sled is used (when present).
+# - Else, in-memory store is used (non-persistent, for dev/tests).
+CHAT2RESPONSE_REDIS_URL=                         # e.g., redis://127.0.0.1/
+CHAT2RESPONSE_REDIS_POOL_MAX=16                  # r2d2 pool max size for Redis
+CHAT2RESPONSE_SLED_PATH=./data/keys.db           # Path for sled data (only when built with sled feature)
+
+# Key lifecycle policy
+CHAT2RESPONSE_KEYS_REQUIRE_EXPIRATION=1          # If 1/true, keys must have expiration at creation
+CHAT2RESPONSE_KEYS_ALLOW_NO_EXPIRATION=0         # If 1/true, allow non-expiring keys (not recommended)
+CHAT2RESPONSE_KEYS_DEFAULT_TTL_SECONDS=86400     # Default TTL (seconds) used if not explicitly provided
 ```
+
+### API Key Backends
+- Redis: enable by setting `CHAT2RESPONSE_REDIS_URL` at runtime. Pool size via `CHAT2RESPONSE_REDIS_POOL_MAX`.
+- Sled: available when compiled with the `sled` feature; set `CHAT2RESPONSE_SLED_PATH` for database path. Used only if Redis URL is not set.
+- Memory: fallback non-persistent store for development/testing when neither Redis is configured nor sled is available.
+
+### API Key Policy
+- Tokens are opaque: `sk_<id>.<secret>` (ID is 32 hex chars, secret is 64 hex chars).
+- Secrets are never stored; verification uses salted SHA-256(salt || secret) with constant-time compare.
+- By default, expiration is required at creation (`CHAT2RESPONSE_KEYS_REQUIRE_EXPIRATION=1`), using either `ttl_seconds` or `expires_at`. You can allow non-expiring keys only if `CHAT2RESPONSE_KEYS_ALLOW_NO_EXPIRATION=1`.
+- A default TTL can be set via `CHAT2RESPONSE_KEYS_DEFAULT_TTL_SECONDS`.
 
 ## API Endpoints
 
 | Endpoint | Purpose | Requires API Key |
 |----------|---------|------------------|
 | `POST /convert` | Convert request format only | No |
-| `POST /proxy` | Convert + forward to OpenAI | Yes |
+| `POST /proxy` | Convert + forward to OpenAI | Yes (X-API-Key) |
+| `GET /keys` | List API keys (id, label, created_at, expires_at, revoked_at, scopes) | No (protect via network ACL) |
+| `POST /keys/generate` | Create a new API key; body supports `label`, `ttl_seconds` or `expires_at`, and `scopes` | No (protect via network ACL) |
+| `POST /keys/revoke` | Revoke an API key; body: `{ "id": "<key-id>" }` | No (protect via network ACL) |
+| `POST /keys/set_expiration` | Set/clear expiration; body: `{ "id": "...", "expires_at": <epoch>|null, "ttl_seconds": <u64> }` | No (protect via network ACL) |
+
+Notes:
+- The `/proxy` route is authenticated via the `X-API-Key` header. You can pass the raw token or `Bearer <token>`. Example: `-H "X-API-Key: sk_<id>.<secret>"`.
+- Key management endpoints do not implement separate admin auth; deploy behind a trusted network, reverse proxy ACL, or service mesh policy.
 
 Both endpoints accept standard Chat Completions JSON and support `?conversation_id=...` for stateful conversations.
 
@@ -236,12 +316,51 @@ chat2response = "0.1"
 ## Testing
 
 ```bash
-# Run all tests
+# Unit and integration tests
 cargo test
 
-# Run end-to-end tests (requires Python)
+# With sled backend compiled (optional feature) and custom sled path:
+cargo test --features sled
+CHAT2RESPONSE_SLED_PATH=./tmp/keys.db cargo test --features sled
+
+# With Redis backend at runtime (ensure a local Redis instance is available):
+export CHAT2RESPONSE_REDIS_URL=redis://127.0.0.1/
+cargo test
+
+# Lints (fail on warnings)
+cargo clippy --all-targets -- -D warnings
+
+# End-to-end tests (requires Python)
 pip install -r e2e/requirements.txt
 pytest e2e/
+```
+
+### Manual API key flows
+
+```bash
+# Generate a key (1-day TTL)
+curl -s -X POST http://localhost:8088/keys/generate \
+  -H "Content-Type: application/json" \
+  -d '{"label":"svc","ttl_seconds":86400}'
+
+# Use it with /proxy
+curl -s -X POST "http://localhost:8088/proxy" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: sk_<id>.<secret>" \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}'
+
+# List keys
+curl -s http://localhost:8088/keys
+
+# Revoke a key
+curl -s -X POST http://localhost:8088/keys/revoke \
+  -H "Content-Type: application/json" \
+  -d '{"id":"<key-id>"}'
+
+# Set expiration (1 hour from now)
+curl -s -X POST http://localhost:8088/keys/set_expiration \
+  -H "Content-Type: application/json" \
+  -d '{"id":"<key-id>","ttl_seconds":3600}'
 ```
 
 ## Examples

@@ -18,6 +18,8 @@ Modules
 Note: Keep the mapping rules aligned with OpenAI docs; the Responses API evolves over time.
 "#]
 
+pub mod auth;
+
 pub mod conversion;
 pub mod mcp_client;
 pub mod mcp_config;
@@ -26,6 +28,8 @@ pub mod server;
 pub mod util;
 
 // Re-export the primary conversion function for ergonomic library use.
+pub use crate::auth::{ApiKeyInfo, ApiKeyManager, GeneratedKey, Verification};
+
 pub use crate::conversion::to_responses_request;
 
 // Re-export model namespaces for convenience (downstream users can do `use chat2response::chat`).

@@ -1,0 +1,58 @@
+# syntax=docker/dockerfile:1
+
+# ---------- Build stage ----------
+FROM rust:1.82-bookworm AS builder
+
+WORKDIR /build
+
+# System deps (certs only; reqwest defaults to rustls in this project)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy manifest first to leverage Docker layer caching for deps
+COPY Cargo.toml Cargo.lock ./
+# Copy sources
+COPY src ./src
+# Optional examples/docs (not required for build, but harmless)
+COPY README.md mcp.json.example . 2>/dev/null || true
+
+# Build release binary and strip symbols to reduce size
+RUN cargo build --release \
+    && strip target/release/chat2response
+
+# ---------- Runtime stage ----------
+FROM debian:bookworm-slim AS runtime
+
+# Create non-root user and prepare runtime packages
+RUN useradd -u 10001 -ms /bin/bash app \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates tzdata \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /data /app \
+    && chown -R app:app /data /app
+
+WORKDIR /app
+
+# Copy the built binary
+COPY --from=builder /build/target/release/chat2response /usr/local/bin/chat2response
+
+# Run as non-root
+USER app
+
+# Sensible defaults (override via `docker run -e KEY=VAL ...`)
+ENV RUST_LOG=info \
+    BIND_ADDR=0.0.0.0:8088 \
+    CHAT2RESPONSE_SLED_PATH=/data/keys.db
+
+# Persist sled data outside the container
+VOLUME ["/data"]
+
+# The service listens on 8088 by default
+EXPOSE 8088
+
+# Entrypoint: pass CLI args to select backend or MCP config, e.g.:
+#   docker run ... chat2response --keys-backend=redis://127.0.0.1/
+#   docker run ... chat2response mcp.json
+ENTRYPOINT ["chat2response"]
+CMD []
