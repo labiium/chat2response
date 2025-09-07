@@ -326,7 +326,7 @@ def test_proxy_endpoint_e2e_with_mock_upstream():
     End-to-end test for /proxy with a mock upstream Responses API:
     - Starts a mock HTTP server implementing /v1/responses.
     - Spawns chat2response built with the "proxy" feature.
-    - Configures pseudo .env with OPENAI_API_KEY and OPENAI_BASE_URL pointing to the mock.
+    - Configures pseudo .env with OPENAI_BASE_URL pointing to the mock; provides Authorization header on request.
     - Posts a request to /proxy and verifies the mock response is returned.
     """
     mock = _MockServer()
@@ -335,7 +335,6 @@ def test_proxy_endpoint_e2e_with_mock_upstream():
         base_url_override = f"http://127.0.0.1:{mock.port}/v1"
         dotenv_vars = {
             "BIND_ADDR": f"127.0.0.1:{_pick_free_port()}",
-            "OPENAI_API_KEY": "sk-test",
             "OPENAI_BASE_URL": base_url_override,
         }
         proc, base_url = _spawn_server(features=["proxy"], dotenv_vars=dotenv_vars)
@@ -344,7 +343,7 @@ def test_proxy_endpoint_e2e_with_mock_upstream():
             "model": "gpt-4o-mini",
             "messages": [{"role": "user", "content": "hello via proxy"}],
         }
-        r = requests.post(f"{base_url}/proxy", json=payload, timeout=15)
+        r = requests.post(f"{base_url}/proxy", json=payload, headers={"Authorization": "Bearer sk-test"}, timeout=15)
         assert r.status_code == 200, r.text
         # Body may not have JSON content-type header; parse explicitly
         body = r.content.decode("utf-8")

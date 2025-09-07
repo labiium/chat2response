@@ -136,9 +136,9 @@ impl AppState {
             mcp_manager: Some(mcp_manager),
         }
     }
-    /// Read the OpenAI API key from environment. Required for /proxy.
+    /// Read the OpenAI API key from environment if present. Optional for /proxy.
     pub fn api_key(&self) -> String {
-        std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY not set (required for /proxy)")
+        std::env::var("OPENAI_API_KEY").unwrap_or_default()
     }
 }
 
@@ -150,7 +150,7 @@ pub fn error_response(status: StatusCode, msg: &str) -> Response {
 
 /// Resolve the OpenAI base URL from environment or use the default public endpoint.
 pub fn openai_base_url() -> String {
-    std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into())
+    std::env::var("OPENAI_BASE_URL").expect("OPENAI_BASE_URL not set (mandatory)")
 }
 
 /// Forward a request upstream with streaming enabled and return an SSE response.
@@ -172,7 +172,9 @@ pub async fn sse_proxy_stream(
     use futures_util::TryStreamExt;
     use http::header;
 
-    let api_key = std::env::var("OPENAI_API_KEY")?;
+    let api_key = std::env::var("OPENAI_API_KEY")
+        .ok()
+        .filter(|s| !s.is_empty());
 
     // Determine upstream mode from env
     // Accepts: "responses" (default), "chat", "chat-completions", "chat_completions"
@@ -225,14 +227,17 @@ pub async fn sse_proxy_stream(
         }
     }
 
-    let resp = client
+    let mut rb = client
         .post(&real_url)
-        .bearer_auth(api_key)
         .header(header::ACCEPT, "text/event-stream")
         .header(header::CONTENT_TYPE, "application/json")
-        .json(&body)
-        .send()
-        .await?;
+        .json(&body);
+    if let Some(k) = api_key {
+        if !k.is_empty() {
+            rb = rb.bearer_auth(k);
+        }
+    }
+    let resp = rb.send().await?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -322,10 +327,17 @@ pub async fn post_responses_with_input_retry(
     payload: &serde_json::Value,
     bearer: Option<String>,
 ) -> Result<Response, anyhow::Error> {
+    let effective_bearer = bearer
+        .and_then(|s| if s.is_empty() { None } else { Some(s) })
+        .or_else(|| {
+            std::env::var("OPENAI_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty())
+        });
     let mut req = client
         .post(url)
         .header(http::header::CONTENT_TYPE, "application/json");
-    if let Some(key) = bearer.or_else(|| std::env::var("OPENAI_API_KEY").ok()) {
+    if let Some(key) = effective_bearer.clone() {
         req = req.bearer_auth(key);
     }
     let first = req.try_clone().unwrap().json(payload).send().await?;
@@ -353,13 +365,13 @@ pub async fn post_responses_with_input_retry(
         }
     }
 
-    let second = client
+    let mut second_req = client
         .post(url)
-        .header(http::header::CONTENT_TYPE, "application/json")
-        .bearer_auth(std::env::var("OPENAI_API_KEY")?)
-        .json(&patched)
-        .send()
-        .await?;
+        .header(http::header::CONTENT_TYPE, "application/json");
+    if let Some(key) = effective_bearer {
+        second_req = second_req.bearer_auth(key);
+    }
+    let second = second_req.json(&patched).send().await?;
 
     let status2 = second.status();
     let bytes2 = second.bytes().await.unwrap_or_default();

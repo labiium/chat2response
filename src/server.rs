@@ -1,3 +1,4 @@
+use axum::http::{header, HeaderMap};
 use axum::{
     extract::Query,
     response::IntoResponse,
@@ -72,6 +73,7 @@ async fn convert(
 async fn proxy(
     State(state): State<Arc<AppState>>,
     Query(q): Query<ConvertQuery>,
+    headers: HeaderMap,
     Json(mut req): Json<ChatCompletionRequest>,
 ) -> Response {
     // Handle MCP tool calls if present
@@ -91,6 +93,19 @@ async fn proxy(
     let url = format!("{base}/responses");
     let client = &state.http;
 
+    // Determine bearer from Authorization header (if provided), else fallback to env via helpers
+    let auth_bearer: Option<String> = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| {
+            let s = s.trim();
+            if s.len() >= 7 && s[..6].eq_ignore_ascii_case("bearer") {
+                Some(s[6..].trim().to_string())
+            } else {
+                None
+            }
+        });
+
     if stream {
         // Streaming SSE passthrough (payload as JSON Value)
         let mut payload = match serde_json::to_value(&converted) {
@@ -105,6 +120,12 @@ async fn proxy(
         normalize_message_contents(&mut payload);
         maybe_add_input(&mut payload);
 
+        // If Authorization header provided, use it for streaming by setting process env for this call
+        if let Some(ref k) = auth_bearer {
+            if !k.is_empty() {
+                std::env::set_var("OPENAI_API_KEY", k);
+            }
+        }
         match sse_proxy_stream(client, &url, &payload).await {
             Ok(resp) => resp,
             Err(e) => error_response(axum::http::StatusCode::BAD_GATEWAY, &e.to_string()),
@@ -123,7 +144,7 @@ async fn proxy(
         normalize_message_contents(&mut payload);
         maybe_add_input(&mut payload);
 
-        match post_responses_with_input_retry(client, &url, &payload, Some(state.api_key())).await {
+        match post_responses_with_input_retry(client, &url, &payload, auth_bearer.clone()).await {
             Ok(resp) => resp,
             Err(e) => error_response(axum::http::StatusCode::BAD_GATEWAY, &e.to_string()),
         }

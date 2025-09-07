@@ -267,7 +267,6 @@ def test_proxy_via_requests_to_responses():
         # Configure server via pseudo .env
         dotenv_vars = {
             "BIND_ADDR": f"127.0.0.1:{_pick_free_port()}",
-            "OPENAI_API_KEY": "sk-test",
             "OPENAI_BASE_URL": f"http://127.0.0.1:{mock.port}/v1",
         }
         # Start server (proxy always enabled)
@@ -278,7 +277,12 @@ def test_proxy_via_requests_to_responses():
                 "model": "gpt-4o-mini",
                 "messages": [{"role": "user", "content": "Hello via ChatCompat"}],
             }
-            resp = requests.post(f"{server_base}/proxy", json=payload, timeout=15)
+            resp = requests.post(
+                f"{server_base}/proxy",
+                json=payload,
+                headers={"Authorization": "Bearer sk-test"},
+                timeout=15,
+            )
             assert resp.status_code == 200, resp.text
             data = resp.json()
 

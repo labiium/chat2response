@@ -94,13 +94,13 @@ let responses_request = to_responses_request(&chat_request, None);
 Set these environment variables:
 
 ```bash
-# Required for /proxy endpoint
-OPENAI_API_KEY=sk-your-key
+# Required
+OPENAI_BASE_URL=https://api.openai.com/v1  # Upstream base URL (mandatory)
 
 # Optional settings
-BIND_ADDR=0.0.0.0:8088              # Server address
-OPENAI_BASE_URL=https://api.openai.com/v1  # OpenAI base URL
-UPSTREAM_MODE=responses              # Use "chat" for Chat Completions upstream
+OPENAI_API_KEY=sk-your-key                 # Used if Authorization header is not provided
+BIND_ADDR=0.0.0.0:8088                     # Server address
+UPSTREAM_MODE=responses                    # Use "chat" for Chat Completions upstream
 ```
 
 ## API Endpoints
@@ -183,7 +183,7 @@ Chat2Response can connect to Model Context Protocol (MCP) servers to provide add
 2. **Start the server with MCP support**:
 
 ```bash
-OPENAI_API_KEY=sk-your-key ./target/release/chat2response mcp.json
+OPENAI_BASE_URL=https://api.openai.com/v1 ./target/release/chat2response mcp.json
 ```
 
 3. **Available MCP Servers**:
