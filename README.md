@@ -10,6 +10,10 @@ Chat2Response bridges the gap between OpenAI's legacy Chat Completions API and t
 
 Run the server:
 ```bash
+# If installed via crates.io:
+chat2response [mcp.json] [--keys-backend=redis://...|sled:<path>|memory]
+
+# From repo build:
 ./target/release/chat2response [mcp.json] [--keys-backend=redis://...|sled:<path>|memory]
 ```
 
@@ -367,6 +371,16 @@ curl -X POST http://localhost:8088/proxy \
 The LLM will automatically have access to both `brave-search_search` and `filesystem_write_file` tools.
 
 ## Installation
+
+From crates.io (binary):
+```bash
+cargo install chat2response
+```
+
+Run the CLI:
+```bash
+OPENAI_API_KEY=sk-your-key chat2response [mcp.json] [--keys-backend=redis://...|sled:<path>|memory]
+```
 
 From source:
 ```bash
