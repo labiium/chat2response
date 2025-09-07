@@ -10,10 +10,6 @@ Chat2Response bridges the gap between OpenAI's legacy Chat Completions API and t
 
 Run the server:
 ```bash
-# If installed via crates.io:
-chat2response [mcp.json] [--keys-backend=redis://...|sled:<path>|memory]
-
-# From repo build:
 chat2response [mcp.json] [--keys-backend=redis://...|sled:<path>|memory]
 ```
 
@@ -75,7 +71,7 @@ cargo install chat2response
 # Clone and build (alternative)
 git clone https://github.com/labiium/chat2response
 cd chat2response
-cargo build --release
+cargo install --path .
 
 # Start the server (basic mode)
 OPENAI_API_KEY=sk-your-key chat2response
