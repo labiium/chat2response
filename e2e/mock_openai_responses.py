@@ -105,7 +105,7 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.NOT_FOUND, {"error": {"message": "Not found"}})
 
     def do_POST(self) -> None:
-        if self.path != "/v1/responses":
+        if self.path not in ("/v1/responses", "/v1/chat/completions"):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": {"message": "Not found"}})
             return
 

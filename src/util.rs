@@ -231,6 +231,7 @@ pub async fn sse_proxy_stream(
         .post(&real_url)
         .header(header::ACCEPT, "text/event-stream")
         .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CONNECTION, "close")
         .json(&body);
     if let Some(k) = api_key {
         if !k.is_empty() {
@@ -376,6 +377,148 @@ pub async fn post_responses_with_input_retry(
     let status2 = second.status();
     let bytes2 = second.bytes().await.unwrap_or_default();
     Ok((status2, bytes2).into_response())
+}
+
+pub async fn sse_proxy_stream_with_bearer(
+    client: &reqwest::Client,
+    url: &str,
+    payload: &serde_json::Value,
+    bearer: Option<&str>,
+) -> Result<Response, anyhow::Error> {
+    use axum::body::Body;
+    use bytes::Bytes;
+    use futures_util::TryStreamExt;
+    use http::header;
+
+    // Determine upstream mode from env
+    // Accepts: "responses" (default), "chat", "chat-completions", "chat_completions"
+    let upstream_mode = std::env::var("UPSTREAM_MODE")
+        .or_else(|_| std::env::var("CHAT2RESPONSE_UPSTREAM"))
+        .unwrap_or_else(|_| "responses".to_string())
+        .to_lowercase();
+
+    // Rewrite URL (only for chat mode): .../responses -> .../chat/completions
+    let mut real_url = url.to_string();
+    let is_chat_mode = matches!(
+        upstream_mode.as_str(),
+        "chat" | "chat-completions" | "chat_completions"
+    );
+    if is_chat_mode {
+        if let Some(pos) = real_url.rfind("/responses") {
+            real_url.replace_range(pos.., "/chat/completions");
+        }
+    }
+
+    // Rewrite payload for chat mode:
+    // - If payload has `input`, convert to Chat's `messages`
+    // - Map `max_output_tokens` -> `max_tokens`
+    // - Remove Responses-only fields (e.g., conversation)
+    // - Ensure `stream: true` for SSE
+    let mut body = payload.clone();
+    if is_chat_mode {
+        if let Some(obj) = body.as_object_mut() {
+            if obj.get("messages").is_none() {
+                if let Some(input) = obj.remove("input") {
+                    match input {
+                        serde_json::Value::Array(_) => {
+                            obj.insert("messages".to_string(), input);
+                        }
+                        serde_json::Value::String(s) => {
+                            obj.insert(
+                                "messages".to_string(),
+                                serde_json::json!([{"role":"user","content": s}]),
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if let Some(max_out) = obj.remove("max_output_tokens") {
+                obj.insert("max_tokens".to_string(), max_out);
+            }
+            obj.remove("conversation");
+            obj.insert("stream".to_string(), serde_json::Value::Bool(true));
+        }
+    }
+
+    // Small tracing for diagnostics
+    let has_bearer = bearer.map(|b| !b.is_empty()).unwrap_or(false);
+    tracing::debug!(
+        upstream_mode = %upstream_mode,
+        is_chat_mode = is_chat_mode,
+        has_bearer = has_bearer,
+        "sse_proxy_stream_with_bearer: preparing upstream request"
+    );
+
+    // Build upstream request
+    // Build request per-attempt to avoid moved RequestBuilder; retry with backoff
+    let build_req = || {
+        let mut b = client
+            .post(&real_url)
+            .header(header::ACCEPT, "text/event-stream")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONNECTION, "close")
+            .json(&body);
+        if let Some(k) = bearer {
+            if !k.is_empty() {
+                b = b.bearer_auth(k);
+            }
+        }
+        b
+    };
+
+    let mut resp_opt: Option<reqwest::Response> = None;
+    let mut last_err: Option<anyhow::Error> = None;
+    for delay_ms in [0u64, 100, 200, 400] {
+        if delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+        match build_req().send().await {
+            Ok(r) => {
+                resp_opt = Some(r);
+                break;
+            }
+            Err(e) => {
+                tracing::warn!(error=%e, attempt_delay_ms=%delay_ms, "sse upstream send attempt failed");
+                last_err = Some(anyhow::Error::new(e));
+                continue;
+            }
+        }
+    }
+    let resp = match resp_opt {
+        Some(r) => r,
+        None => {
+            return Err(
+                last_err.unwrap_or_else(|| anyhow::anyhow!("upstream streaming request failed"))
+            );
+        }
+    };
+    let status = resp.status();
+    if !status.is_success() {
+        let bytes = resp.bytes().await.unwrap_or_default();
+        return Ok((status, bytes).into_response());
+    }
+
+    // Stream SSE passthrough without buffering the entire response.
+    let upstream_ct = resp.headers().get(header::CONTENT_TYPE).cloned();
+    let stream = resp
+        .bytes_stream()
+        .map_err(|e| std::io::Error::other(e.to_string()))
+        .map_ok(Bytes::from);
+
+    let mut builder = http::Response::builder().status(StatusCode::OK);
+    if let Some(ct) = upstream_ct {
+        builder = builder.header(header::CONTENT_TYPE, ct);
+    } else {
+        builder = builder.header(header::CONTENT_TYPE, "text/event-stream");
+    }
+    let response = builder
+        .header("Cache-Control", "no-cache")
+        .header("Connection", "keep-alive")
+        .body(Body::from_stream(stream))
+        .unwrap();
+
+    Ok(response)
 }
 
 #[allow(dead_code)]

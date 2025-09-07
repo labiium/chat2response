@@ -15,7 +15,7 @@ use crate::util::AppState;
 
 use crate::util::{
     cors_layer_from_env, error_response, openai_base_url, post_responses_with_input_retry,
-    sse_proxy_stream,
+    sse_proxy_stream_with_bearer,
 };
 
 /// Query parameters for conversion/proxy endpoints.
@@ -120,13 +120,7 @@ async fn proxy(
         normalize_message_contents(&mut payload);
         maybe_add_input(&mut payload);
 
-        // If Authorization header provided, use it for streaming by setting process env for this call
-        if let Some(ref k) = auth_bearer {
-            if !k.is_empty() {
-                std::env::set_var("OPENAI_API_KEY", k);
-            }
-        }
-        match sse_proxy_stream(client, &url, &payload).await {
+        match sse_proxy_stream_with_bearer(client, &url, &payload, auth_bearer.as_deref()).await {
             Ok(resp) => resp,
             Err(e) => error_response(axum::http::StatusCode::BAD_GATEWAY, &e.to_string()),
         }
