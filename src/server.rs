@@ -8,8 +8,8 @@ use axum::{extract::State, response::Response};
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::conversion::to_responses_request;
-use crate::models::chat::ChatCompletionRequest;
+use crate::conversion::to_responses_request_with_mcp;
+use crate::models::chat::{ChatCompletionRequest, ChatMessage, Role};
 use crate::util::AppState;
 
 use crate::util::{
@@ -26,7 +26,12 @@ pub struct ConvertQuery {
 
 /// Build the Axum router with `/convert` and `/proxy`.
 pub fn build_router() -> Router {
-    let state = Arc::new(AppState::default());
+    build_router_with_state(AppState::default())
+}
+
+/// Build the Axum router with custom AppState.
+pub fn build_router_with_state(app_state: AppState) -> Router {
+    let state = Arc::new(app_state);
 
     let router = Router::new()
         .route("/status", get(status))
@@ -52,10 +57,12 @@ async fn status() -> impl IntoResponse {
 
 /// Convert a Chat Completions request into a Responses API request payload (JSON).
 async fn convert(
+    State(state): State<Arc<AppState>>,
     Query(q): Query<ConvertQuery>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> impl IntoResponse {
-    let converted = to_responses_request(&req, q.conversation_id);
+    let mcp_manager = state.mcp_manager.as_ref().map(|m| m.as_ref());
+    let converted = to_responses_request_with_mcp(&req, q.conversation_id, mcp_manager).await;
     Json(converted)
 }
 
@@ -65,9 +72,18 @@ async fn convert(
 async fn proxy(
     State(state): State<Arc<AppState>>,
     Query(q): Query<ConvertQuery>,
-    Json(req): Json<ChatCompletionRequest>,
+    Json(mut req): Json<ChatCompletionRequest>,
 ) -> Response {
-    let converted = to_responses_request(&req, q.conversation_id);
+    // Handle MCP tool calls if present
+    if let Err(e) = handle_mcp_tool_calls(&mut req, &state).await {
+        return error_response(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("MCP tool call failed: {}", e),
+        );
+    }
+
+    let mcp_manager = state.mcp_manager.as_ref().map(|m| m.as_ref());
+    let converted = to_responses_request_with_mcp(&req, q.conversation_id, mcp_manager).await;
     let stream = converted.stream.unwrap_or(false);
 
     // Always target Responses upstream
@@ -112,6 +128,80 @@ async fn proxy(
             Err(e) => error_response(axum::http::StatusCode::BAD_GATEWAY, &e.to_string()),
         }
     }
+}
+
+/// Handle MCP tool calls in the request by executing them and adding the results as messages
+async fn handle_mcp_tool_calls(
+    req: &mut ChatCompletionRequest,
+    state: &AppState,
+) -> Result<(), anyhow::Error> {
+    use crate::mcp_client::McpTool;
+    use serde_json::Value;
+
+    let mcp_manager = match &state.mcp_manager {
+        Some(manager) => manager,
+        None => return Ok(()), // No MCP manager, nothing to do
+    };
+
+    // Look for assistant messages with tool calls that might be MCP tools
+    let mut tool_results = Vec::new();
+
+    for message in &req.messages {
+        if message.role == Role::Assistant {
+            if let Value::Object(content_obj) = &message.content {
+                if let Some(Value::Array(calls)) = content_obj.get("tool_calls") {
+                    for call in calls {
+                        if let Value::Object(call_obj) = call {
+                            if let (Some(Value::String(call_id)), Some(Value::Object(function))) =
+                                (call_obj.get("id"), call_obj.get("function"))
+                            {
+                                if let (Some(Value::String(name)), Some(arguments)) =
+                                    (function.get("name"), function.get("arguments"))
+                                {
+                                    // Check if this is an MCP tool (has server_tool format)
+                                    if let Some((server_name, tool_name)) =
+                                        McpTool::parse_combined_name(name)
+                                    {
+                                        match mcp_manager
+                                            .call_tool(&server_name, &tool_name, arguments.clone())
+                                            .await
+                                        {
+                                            Ok(result) => {
+                                                tool_results.push(ChatMessage {
+                                                    role: Role::Tool,
+                                                    content: result,
+                                                    name: Some(name.clone()),
+                                                    tool_call_id: Some(call_id.clone()),
+                                                });
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    "MCP tool call failed: {} - {}",
+                                                    name,
+                                                    e
+                                                );
+                                                tool_results.push(ChatMessage {
+                                                    role: Role::Tool,
+                                                    content: Value::String(format!("Error: {}", e)),
+                                                    name: Some(name.clone()),
+                                                    tool_call_id: Some(call_id.clone()),
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Add tool results to the messages
+    req.messages.extend(tool_results);
+
+    Ok(())
 }
 
 /// Derive and inject an 'input' field for upstreams that expect a single-string input.

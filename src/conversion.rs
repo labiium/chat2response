@@ -50,6 +50,45 @@ pub fn to_responses_request(
     }
 }
 
+/// Convert an OpenAI Chat Completions request into a Responses API request with MCP tools merged in.
+pub async fn to_responses_request_with_mcp(
+    src: &chat::ChatCompletionRequest,
+    conversation: Option<String>,
+    mcp_manager: Option<&crate::mcp_client::McpClientManager>,
+) -> resp::ResponsesRequest {
+    let mut request = to_responses_request(src, conversation);
+
+    // Add MCP tools if manager is available
+    if let Some(manager) = mcp_manager {
+        if let Ok(mcp_tools) = manager.list_all_tools().await {
+            let mcp_tool_definitions: Vec<resp::ResponsesToolDefinition> = mcp_tools
+                .iter()
+                .map(|tool| {
+                    // Convert MCP tool to Responses tool definition
+                    resp::ResponsesToolDefinition::Function {
+                        function: resp::ResponsesToolFunction {
+                            name: format!("{}_{}", tool.server_name, tool.name),
+                            description: tool.description.clone(),
+                            parameters: tool.input_schema.clone(),
+                        },
+                    }
+                })
+                .collect();
+
+            // Merge with existing tools
+            let mut all_tools = request.tools.unwrap_or_default();
+            all_tools.extend(mcp_tool_definitions);
+            request.tools = if all_tools.is_empty() {
+                None
+            } else {
+                Some(all_tools)
+            };
+        }
+    }
+
+    request
+}
+
 fn map_messages(src: &[chat::ChatMessage]) -> Vec<resp::ResponsesMessage> {
     src.iter()
         .map(|m| resp::ResponsesMessage {

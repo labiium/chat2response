@@ -13,6 +13,7 @@ Chat2Response bridges the gap between OpenAI's legacy Chat Completions API and t
 **🎯 Unified Interface** - Handle text, tools, and multimodal inputs consistently  
 **🚀 Lightweight** - Single binary with minimal resource usage  
 **🏗️ vLLM & Local Models** - Add Responses API support to vLLM, Ollama, and other providers  
+**🔧 MCP Integration** - Connect to Model Context Protocol servers for enhanced tool capabilities  
 
 ## Quick Start
 
@@ -24,8 +25,11 @@ git clone https://github.com/labiium/chat2response
 cd chat2response
 cargo build --release
 
-# Start the server
+# Start the server (basic mode)
 OPENAI_API_KEY=sk-your-key ./target/release/chat2response
+
+# Start with MCP integration
+OPENAI_API_KEY=sk-your-key ./target/release/chat2response mcp.json
 ```
 
 Server runs at `http://localhost:8088`
@@ -142,6 +146,77 @@ UPSTREAM_MODE=chat \
 ```
 
 Now your local models support the modern Responses API format! Your applications get better streaming, tool traces, and conversation state while your local inference server keeps running unchanged.
+
+## MCP Integration
+
+Chat2Response can connect to Model Context Protocol (MCP) servers to provide additional tools to the LLM. When MCP servers are configured, their tools are automatically merged with any tools specified in the original request.
+
+### Setting up MCP
+
+1. **Create an MCP configuration file** (`mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    },
+    "brave-search": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+      "env": {
+        "BRAVE_API_KEY": "your-brave-api-key-here"
+      }
+    },
+    "postgres": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres"],
+      "env": {
+        "POSTGRES_CONNECTION_STRING": "postgresql://user:password@localhost:5432/database"
+      }
+    }
+  }
+}
+```
+
+2. **Start the server with MCP support**:
+
+```bash
+OPENAI_API_KEY=sk-your-key ./target/release/chat2response mcp.json
+```
+
+3. **Available MCP Servers**:
+   - `@modelcontextprotocol/server-filesystem` - File system operations
+   - `@modelcontextprotocol/server-brave-search` - Web search via Brave
+   - `@modelcontextprotocol/server-postgres` - PostgreSQL database access
+   - `@modelcontextprotocol/server-github` - GitHub API integration
+   - Many more available on npm
+
+### How MCP Tools Work
+
+- MCP tools are automatically discovered and added to the available tool list
+- Tool names are prefixed with the server name (e.g., `filesystem_read_file`)
+- The LLM can call MCP tools just like regular function tools
+- Tool execution happens automatically and results are injected into the conversation
+- Multiple MCP servers can run simultaneously
+
+### Example Request with MCP Tools
+
+When MCP servers are connected, your regular Chat Completions request automatically gains access to their tools:
+
+```bash
+curl -X POST http://localhost:8088/proxy \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o",
+    "messages": [
+      {"role": "user", "content": "Search for recent news about AI and save the results to a file"}
+    ]
+  }'
+```
+
+The LLM will automatically have access to both `brave-search_search` and `filesystem_write_file` tools.
 
 ## Installation
 

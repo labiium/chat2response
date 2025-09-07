@@ -19,6 +19,8 @@ Note: Keep the mapping rules aligned with OpenAI docs; the Responses API evolves
 "#]
 
 pub mod conversion;
+pub mod mcp_client;
+pub mod mcp_config;
 pub mod models;
 pub mod server;
 pub mod util;

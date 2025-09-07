@@ -106,17 +106,36 @@ pub fn env_bind_addr() -> String {
 /// Shared application state used by the HTTP server and handlers.
 pub struct AppState {
     pub http: reqwest::Client,
+    pub mcp_manager: Option<std::sync::Arc<crate::mcp_client::McpClientManager>>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self {
             http: reqwest::Client::new(),
+            mcp_manager: None,
         }
     }
 }
 
 impl AppState {
+    /// Create AppState with MCP manager
+    pub fn with_mcp_manager(mcp_manager: crate::mcp_client::McpClientManager) -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            mcp_manager: Some(std::sync::Arc::new(mcp_manager)),
+        }
+    }
+
+    /// Create AppState with MCP manager wrapped in Arc
+    pub fn with_mcp_manager_arc(
+        mcp_manager: std::sync::Arc<crate::mcp_client::McpClientManager>,
+    ) -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            mcp_manager: Some(mcp_manager),
+        }
+    }
     /// Read the OpenAI API key from environment. Required for /proxy.
     pub fn api_key(&self) -> String {
         std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY not set (required for /proxy)")

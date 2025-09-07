@@ -6,7 +6,7 @@ use std::collections::HashMap;
 ///
 /// Uses lowercase serialization to match the OpenAI Chat API:
 /// "system" | "user" | "assistant" | "tool" | "function"
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     System,
