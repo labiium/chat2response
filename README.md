@@ -79,6 +79,61 @@ OPENAI_API_KEY=sk-your-key ./target/release/chat2response mcp.json
 
 Server runs at `http://localhost:8088`.
 
+### Run with Docker (GHCR)
+
+Official images are published to GitHub Container Registry (GHCR):
+- Image: `ghcr.io/labiium/chat2response`
+- Tags:
+  - `edge` — latest commit on `main`/`master`
+  - Release tags — `vX.Y.Z`, `X.Y`, `X`, and `latest` on versioned releases
+  - `sha-<short>` — content‐addressed builds
+
+Pull:
+```bash
+docker pull ghcr.io/labiium/chat2response:edge
+```
+
+Basic run (sled backend with persistent volume):
+```bash
+docker run --rm -p 8088:8088 \
+  -e OPENAI_BASE_URL=https://api.openai.com/v1 \
+  -e OPENAI_API_KEY=sk-your-key \
+  -v chat2response-data:/data \
+  ghcr.io/labiium/chat2response:edge
+```
+
+Use Redis backend:
+```bash
+# macOS/Windows (Docker Desktop)
+docker run --rm -p 8088:8088 \
+  -e OPENAI_BASE_URL=https://api.openai.com/v1 \
+  -e CHAT2RESPONSE_REDIS_URL=redis://host.docker.internal:6379/ \
+  ghcr.io/labiium/chat2response:edge --keys-backend=redis://host.docker.internal:6379/
+
+# Linux (access local Redis)
+docker run --rm --network=host \
+  -e OPENAI_BASE_URL=https://api.openai.com/v1 \
+  -e CHAT2RESPONSE_REDIS_URL=redis://127.0.0.1:6379/ \
+  ghcr.io/labiium/chat2response:edge --keys-backend=redis://127.0.0.1:6379/
+```
+
+With MCP configuration:
+```bash
+# Ensure mcp.json exists locally
+docker run --rm -p 8088:8088 \
+  -e OPENAI_BASE_URL=https://api.openai.com/v1 \
+  -v $(pwd)/mcp.json:/app/mcp.json:ro \
+  -v chat2response-data:/data \
+  ghcr.io/labiium/chat2response:edge /app/mcp.json
+```
+
+Notes:
+- Defaults inside the image:
+  - `BIND_ADDR=0.0.0.0:8088` (listens on all interfaces)
+  - `CHAT2RESPONSE_SLED_PATH=/data/keys.db` (mount a volume for persistence)
+- You can pass CLI flags exactly as with the binary (e.g., `--keys-backend=...`).
+- For corporate proxies, set `HTTP_PROXY`/`HTTPS_PROXY` env vars.
+
 ### Convert Only (No API Calls)
 
 ```bash
