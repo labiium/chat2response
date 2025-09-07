@@ -14,7 +14,7 @@ Run the server:
 chat2response [mcp.json] [--keys-backend=redis://...|sled:<path>|memory]
 
 # From repo build:
-./target/release/chat2response [mcp.json] [--keys-backend=redis://...|sled:<path>|memory]
+chat2response [mcp.json] [--keys-backend=redis://...|sled:<path>|memory]
 ```
 
 - `mcp.json` positional: if provided as the first non-flag argument, the server loads and connects to MCP servers defined in that file.
@@ -32,27 +32,27 @@ Backend precedence (highest to lowest):
 Examples:
 - Basic server (no MCP):
 ```bash
-./target/release/chat2response
+chat2response
 ```
 - With MCP configuration file:
 ```bash
-./target/release/chat2response mcp.json
+chat2response mcp.json
 ```
 - Use Redis explicitly (CLI overrides env):
 ```bash
-./target/release/chat2response --keys-backend=redis://127.0.0.1/
+chat2response --keys-backend=redis://127.0.0.1/
 ```
 - Use sled at a custom path:
 ```bash
-./target/release/chat2response --keys-backend=sled:./data/keys.db
+chat2response --keys-backend=sled:./data/keys.db
 ```
 - Force in-memory store (useful for demos/tests):
 ```bash
-./target/release/chat2response --keys-backend=memory
+chat2response --keys-backend=memory
 ```
 - With environment variables:
 ```bash
-CHAT2RESPONSE_REDIS_URL=redis://127.0.0.1/ ./target/release/chat2response
+CHAT2RESPONSE_REDIS_URL=redis://127.0.0.1/ chat2response
 ```
 
 ## Why Use This?
@@ -69,16 +69,19 @@ CHAT2RESPONSE_REDIS_URL=redis://127.0.0.1/ ./target/release/chat2response
 ### Install and Run
 
 ```bash
-# Clone and build
+# Install from crates.io (preferred)
+cargo install chat2response
+
+# Clone and build (alternative)
 git clone https://github.com/labiium/chat2response
 cd chat2response
 cargo build --release
 
 # Start the server (basic mode)
-OPENAI_API_KEY=sk-your-key ./target/release/chat2response
+OPENAI_API_KEY=sk-your-key chat2response
 
 # Start with MCP integration
-OPENAI_API_KEY=sk-your-key ./target/release/chat2response mcp.json
+OPENAI_API_KEY=sk-your-key chat2response mcp.json
 ```
 
 Server runs at `http://localhost:8088`.
@@ -294,7 +297,7 @@ Place Chat2Response in front of these services to instantly add Responses API su
 # Point to your local vLLM server
 OPENAI_BASE_URL=http://localhost:8000/v1 \
 UPSTREAM_MODE=chat \
-./target/release/chat2response
+chat2response
 ```
 
 Now your local models support the modern Responses API format. Your applications get better streaming, tool traces, and conversation state while your local inference server keeps running unchanged.
@@ -335,7 +338,7 @@ Chat2Response can connect to Model Context Protocol (MCP) servers to provide add
 2) Start the server with MCP support:
 
 ```bash
-OPENAI_BASE_URL=https://api.openai.com/v1 ./target/release/chat2response mcp.json
+OPENAI_BASE_URL=https://api.openai.com/v1 chat2response mcp.json
 ```
 
 3) Available MCP Servers:
