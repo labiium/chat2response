@@ -1,6 +1,6 @@
 [package]
 name = "chat2response"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Translate and proxy OpenAI Chat Completions requests to the Responses API."
 license = "Apache-2.0"
