@@ -274,8 +274,7 @@ pub fn openai_base_url() -> String {
 ///
 /// Behavior:
 /// - Default mode ("responses"): POST to `{base_url}/responses` with Responses-shaped payload
-/// - Chat mode (UPSTREAM_MODE = "chat"|"chat-completions"): rewrite the URL suffix
-///   to `/chat/completions` and transform the payload into Chat Completions JSON
+/// (Legacy UPSTREAM_MODE chat rewrite removed; proxy always targets Responses endpoint)
 ///
 /// Note: For very long streams, consider a true streaming passthrough (hyper upgrade or
 /// axum streaming body). This implementation buffers the upstream SSE into memory.
@@ -293,56 +292,9 @@ pub async fn sse_proxy_stream(
         .ok()
         .filter(|s| !s.is_empty());
 
-    // Determine upstream mode from env
-    // Accepts: "responses" (default), "chat", "chat-completions", "chat_completions"
-    let upstream_mode = std::env::var("UPSTREAM_MODE")
-        .or_else(|_| std::env::var("CHAT2RESPONSE_UPSTREAM"))
-        .unwrap_or_else(|_| "responses".to_string())
-        .to_lowercase();
-
-    // Rewrite URL (only for chat mode): .../responses -> .../chat/completions
-    let mut real_url = url.to_string();
-    let is_chat_mode = matches!(
-        upstream_mode.as_str(),
-        "chat" | "chat-completions" | "chat_completions"
-    );
-    if is_chat_mode {
-        if let Some(pos) = real_url.rfind("/responses") {
-            real_url.replace_range(pos.., "/chat/completions");
-        }
-    }
-
-    // Rewrite payload for chat mode:
-    // - If payload has `input`, convert to Chat's `messages`
-    // - Map `max_output_tokens` -> `max_tokens`
-    // - Remove Responses-only fields (e.g., conversation)
-    // - Ensure `stream: true` for SSE
-    let mut body = payload.clone();
-    if is_chat_mode {
-        if let Some(obj) = body.as_object_mut() {
-            if obj.get("messages").is_none() {
-                if let Some(input) = obj.remove("input") {
-                    match input {
-                        serde_json::Value::Array(_) => {
-                            obj.insert("messages".to_string(), input);
-                        }
-                        serde_json::Value::String(s) => {
-                            obj.insert(
-                                "messages".to_string(),
-                                serde_json::json!([{"role":"user","content": s}]),
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            if let Some(max_out) = obj.remove("max_output_tokens") {
-                obj.insert("max_tokens".to_string(), max_out);
-            }
-            obj.remove("conversation");
-            obj.insert("stream".to_string(), serde_json::Value::Bool(true));
-        }
-    }
+    // Simplified: always treat URL as Responses endpoint; no chat mode rewriting
+    let real_url = url.to_string();
+    let body = payload.clone();
 
     let mut rb = client
         .post(&real_url)
@@ -525,56 +477,9 @@ pub async fn sse_proxy_stream_with_bearer(
     use futures_util::TryStreamExt;
     use http::header;
 
-    // Determine upstream mode from env
-    // Accepts: "responses" (default), "chat", "chat-completions", "chat_completions"
-    let upstream_mode = std::env::var("UPSTREAM_MODE")
-        .or_else(|_| std::env::var("CHAT2RESPONSE_UPSTREAM"))
-        .unwrap_or_else(|_| "responses".to_string())
-        .to_lowercase();
-
-    // Rewrite URL (only for chat mode): .../responses -> .../chat/completions
-    let mut real_url = url.to_string();
-    let is_chat_mode = matches!(
-        upstream_mode.as_str(),
-        "chat" | "chat-completions" | "chat_completions"
-    );
-    if is_chat_mode {
-        if let Some(pos) = real_url.rfind("/responses") {
-            real_url.replace_range(pos.., "/chat/completions");
-        }
-    }
-
-    // Rewrite payload for chat mode:
-    // - If payload has `input`, convert to Chat's `messages`
-    // - Map `max_output_tokens` -> `max_tokens`
-    // - Remove Responses-only fields (e.g., conversation)
-    // - Ensure `stream: true` for SSE
-    let mut body = payload.clone();
-    if is_chat_mode {
-        if let Some(obj) = body.as_object_mut() {
-            if obj.get("messages").is_none() {
-                if let Some(input) = obj.remove("input") {
-                    match input {
-                        serde_json::Value::Array(_) => {
-                            obj.insert("messages".to_string(), input);
-                        }
-                        serde_json::Value::String(s) => {
-                            obj.insert(
-                                "messages".to_string(),
-                                serde_json::json!([{"role":"user","content": s}]),
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            if let Some(max_out) = obj.remove("max_output_tokens") {
-                obj.insert("max_tokens".to_string(), max_out);
-            }
-            obj.remove("conversation");
-            obj.insert("stream".to_string(), serde_json::Value::Bool(true));
-        }
-    }
+    // Simplified: always treat URL as Responses endpoint; no chat mode rewriting
+    let real_url = url.to_string();
+    let body = payload.clone();
 
     // Small tracing for diagnostics
     // Determine effective bearer (explicit Authorization header overrides env OPENAI_API_KEY fallback)
@@ -595,8 +500,6 @@ pub async fn sse_proxy_stream_with_bearer(
 
     let has_bearer = effective_bearer.is_some();
     tracing::debug!(
-        upstream_mode = %upstream_mode,
-        is_chat_mode = is_chat_mode,
         has_bearer = has_bearer,
         "sse_proxy_stream_with_bearer: preparing upstream request"
     );

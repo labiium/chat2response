@@ -153,8 +153,9 @@ Returns the equivalent Responses API request (no OpenAI call made).
 ### Full Proxy (Calls OpenAI)
 
 ```bash
-curl -X POST http://localhost:8088/proxy \
+curl -X POST http://localhost:8088/v1/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-key" \
   -d '{
     "model": "gpt-4o",
     "messages": [{"role": "user", "content": "Hello!"}],
@@ -176,8 +177,9 @@ Converts your request and forwards it to OpenAI's Responses endpoint.
 Get real-time responses with proper event types:
 ```bash
 # Streaming works out of the box
-curl -N http://localhost:8088/proxy \
+curl -N http://localhost:8088/v1/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-key" \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Stream this"}],"stream":true}'
 ```
 
@@ -203,7 +205,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1        # Upstream base URL (mandatory)
 # Optional (Upstream behavior)
 OPENAI_API_KEY=sk-your-key                       # Used if Authorization header is not provided
 BIND_ADDR=0.0.0.0:8088                           # Server address
-UPSTREAM_MODE=responses                          # "responses" (default) or "chat" for Chat Completions upstream
+# NOTE: Service mirrors OpenAI endpoints: use /v1/chat/completions for Chat payloads, /v1/responses for native Responses payloads.
 CHAT2RESPONSE_UPSTREAM_INPUT=0                   # If 1/true, derive and send top-level "input" when upstream requires it
 
 # Optional (Proxy/network)
@@ -294,9 +296,7 @@ Place Chat2Response in front of these services to instantly add Responses API su
 
 ```bash
 # Point to your local vLLM server
-OPENAI_BASE_URL=http://localhost:8000/v1 \
-UPSTREAM_MODE=chat \
-chat2response
+OPENAI_BASE_URL=http://localhost:8000/v1 chat2response
 ```
 
 Now your local models support the modern Responses API format. Your applications get better streaming, tool traces, and conversation state while your local inference server keeps running unchanged.
@@ -427,8 +427,8 @@ curl -s -X POST http://localhost:8088/keys/generate \
   -H "Content-Type: application/json" \
   -d '{"label":"svc","ttl_seconds":86400}'
 
-# Use it with /proxy
-curl -s -X POST "http://localhost:8088/proxy" \
+# Use it with /v1/chat/completions
+curl -s -X POST "http://localhost:8088/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer sk_<id>.<secret>" \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}'
@@ -478,11 +478,15 @@ curl -X POST http://localhost:8088/convert \
 <summary>Proxy with conversation ID</summary>
 
 ```bash
-curl -X POST "http://localhost:8088/proxy?conversation_id=chat-123" \
+curl -X POST "http://localhost:8088/v1/responses" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-key" \
   -d '{
     "model": "gpt-4o",
-    "messages": [{"role": "user", "content": "Remember this conversation"}]
+    "conversation": "chat-123",
+    "input": [
+      {"role": "user", "content": "Remember this conversation"}
+    ]
   }'
 ```
 </details>
@@ -494,4 +498,4 @@ Apache-2.0
 ## Links
 
 - [OpenAI Responses API Guide](https://platform.openai.com/docs/guides/responses)
-- [OpenAI Chat Completions API](https://platform.openai.com/docs/api-reference/chat)
+- (Legacy reference) [OpenAI Chat Completions API](https://platform.openai.com/docs/api-reference/chat)
