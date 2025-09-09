@@ -81,6 +81,16 @@ async fn main() {
         mcp_manager: mcp_manager_arc,
         api_keys,
     };
+    // Startup mode announcement (managed vs passthrough)
+    let managed_mode = std::env::var("OPENAI_API_KEY")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .is_some();
+    if managed_mode {
+        tracing::info!("Auth mode: managed (internal upstream key; client bearer tokens validated and substituted upstream)");
+    } else {
+        tracing::info!("Auth mode: passthrough (client bearer tokens forwarded upstream)");
+    }
 
     let addr: SocketAddr = env_bind_addr()
         .parse()
