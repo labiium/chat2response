@@ -37,6 +37,7 @@ pub fn build_router_with_state(app_state: AppState) -> Router {
     let router = Router::new()
         .route("/status", get(status))
         .route("/convert", post(convert))
+        .route("/chat/completions", post(chat_completions_passthrough)) // Direct chat passthrough
         .route("/keys", get(list_keys))
         .route("/keys/generate", post(generate_key))
         .route("/keys/revoke", post(revoke_key))
@@ -88,33 +89,55 @@ async fn proxy(
     headers: HeaderMap,
     Json(mut req): Json<ChatCompletionRequest>,
 ) -> Response {
-    // Enforce API key if configured (X-API-Key header, optionally with Bearer scheme)
-    if let Some(manager) = &state.api_keys {
-        let token_hdr = headers
-            .get("x-api-key")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.trim().to_string());
-        let token_opt = token_hdr.as_deref().map(|s| {
-            if s.len() >= 7 && s[..6].eq_ignore_ascii_case("bearer") {
-                s[6..].trim()
-            } else {
-                s
+    // Determine if we are operating in "managed upstream key" mode (OPENAI_API_KEY present).
+    let env_api_key = std::env::var("OPENAI_API_KEY")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+
+    let managed_mode = env_api_key.is_some();
+
+    // Authorization handling for strict OpenAI compliance.
+    // Managed mode (OPENAI_API_KEY present):
+    //   - Expect client Authorization: Bearer <issued_access_token>
+    //   - Verify via ApiKeyManager; if valid, ignore client token for upstream and use env key.
+    //   - Missing/invalid -> 401.
+    // Passthrough mode (no OPENAI_API_KEY):
+    //   - Expect client Authorization: Bearer <upstream_key>; forward as-is.
+    if managed_mode {
+        if let Some(manager) = &state.api_keys {
+            let auth_header = headers
+                .get(header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok());
+            let bearer_token = auth_header.and_then(|raw| {
+                let s = raw.trim();
+                if s.len() >= 7 && s[..6].eq_ignore_ascii_case("bearer") {
+                    Some(s[6..].trim())
+                } else {
+                    None
+                }
+            });
+            match bearer_token.map(|t| manager.verify(t)) {
+                Some(crate::auth::Verification::Valid { .. }) => {
+                    // proceed; upstream will use env_api_key
+                }
+                Some(crate::auth::Verification::Revoked { .. }) => {
+                    return error_response(axum::http::StatusCode::UNAUTHORIZED, "API key revoked");
+                }
+                Some(crate::auth::Verification::Expired { .. }) => {
+                    return error_response(axum::http::StatusCode::UNAUTHORIZED, "API key expired");
+                }
+                Some(_) => {
+                    return error_response(axum::http::StatusCode::UNAUTHORIZED, "Invalid API key");
+                }
+                None => {
+                    return error_response(
+                        axum::http::StatusCode::UNAUTHORIZED,
+                        "Missing Authorization bearer",
+                    );
+                }
             }
-        });
-        match token_opt.map(|t| manager.verify(t)) {
-            Some(crate::auth::Verification::Valid { .. }) => {}
-            Some(crate::auth::Verification::Revoked { .. }) => {
-                return error_response(axum::http::StatusCode::UNAUTHORIZED, "API key revoked");
-            }
-            Some(crate::auth::Verification::Expired { .. }) => {
-                return error_response(axum::http::StatusCode::UNAUTHORIZED, "API key expired");
-            }
-            Some(_) => {
-                return error_response(axum::http::StatusCode::UNAUTHORIZED, "Invalid API key");
-            }
-            None => {
-                return error_response(axum::http::StatusCode::UNAUTHORIZED, "Missing API key");
-            }
+        } else {
+            // No manager configured; accept all requests and rely solely on env key.
         }
     }
 
@@ -135,18 +158,24 @@ async fn proxy(
     let url = format!("{base}/responses");
     let client = &state.http;
 
-    // Determine bearer from Authorization header (if provided), else fallback to env via helpers
-    let auth_bearer: Option<String> = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| {
-            let s = s.trim();
-            if s.len() >= 7 && s[..6].eq_ignore_ascii_case("bearer") {
-                Some(s[6..].trim().to_string())
-            } else {
-                None
-            }
-        });
+    // Determine upstream bearer:
+    // - Managed mode: always use env OPENAI_API_KEY (ignore incoming Authorization)
+    // - Passthrough mode: use incoming Authorization Bearer token if present
+    let auth_bearer: Option<String> = if managed_mode {
+        env_api_key.clone()
+    } else {
+        headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| {
+                let s = s.trim();
+                if s.len() >= 7 && s[..6].eq_ignore_ascii_case("bearer") {
+                    Some(s[6..].trim().to_string())
+                } else {
+                    None
+                }
+            })
+    };
 
     if stream {
         // Streaming SSE passthrough (payload as JSON Value)
@@ -188,6 +217,102 @@ async fn proxy(
 }
 
 // API key management endpoints
+/// Direct passthrough for native Chat Completions requests (no translation).
+/// Accepts the standard OpenAI Chat Completions JSON and forwards it upstream
+/// to {OPENAI_BASE_URL}/chat/completions. Streaming is supported if `stream:true`.
+async fn chat_completions_passthrough(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let base = openai_base_url();
+    let url = format!("{}/chat/completions", base);
+
+    // Determine managed (internal upstream key) vs passthrough mode
+    let env_api_key = std::env::var("OPENAI_API_KEY")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let managed_mode = env_api_key.is_some();
+
+    // Extract client bearer (could be internal access token or upstream key)
+    let client_bearer = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| {
+            let s = s.trim();
+            if s.len() >= 7 && s[..6].eq_ignore_ascii_case("bearer") {
+                Some(s[6..].trim().to_string())
+            } else {
+                None
+            }
+        });
+
+    // Resolve upstream bearer
+    let upstream_bearer = if managed_mode {
+        if let Some(manager) = &state.api_keys {
+            match client_bearer.as_deref().map(|tok| manager.verify(tok)) {
+                Some(crate::auth::Verification::Valid { .. }) => env_api_key.clone(),
+                Some(crate::auth::Verification::Revoked { .. }) => {
+                    return error_response(axum::http::StatusCode::UNAUTHORIZED, "API key revoked");
+                }
+                Some(crate::auth::Verification::Expired { .. }) => {
+                    return error_response(axum::http::StatusCode::UNAUTHORIZED, "API key expired");
+                }
+                Some(_) => {
+                    return error_response(axum::http::StatusCode::UNAUTHORIZED, "Invalid API key");
+                }
+                None => {
+                    return error_response(
+                        axum::http::StatusCode::UNAUTHORIZED,
+                        "Missing Authorization bearer",
+                    );
+                }
+            }
+        } else {
+            // No manager: accept and use env key
+            env_api_key.clone()
+        }
+    } else {
+        if client_bearer.is_none() {
+            return error_response(
+                axum::http::StatusCode::UNAUTHORIZED,
+                "Missing Authorization bearer",
+            );
+        }
+        client_bearer.clone()
+    };
+
+    // Determine if streaming is requested
+    let stream = body
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let client = &state.http;
+
+    if stream {
+        match sse_proxy_stream_with_bearer(client, &url, &body, upstream_bearer.as_deref()).await {
+            Ok(resp) => resp,
+            Err(e) => error_response(axum::http::StatusCode::BAD_GATEWAY, &e.to_string()),
+        }
+    } else {
+        let mut req = client
+            .post(&url)
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(b) = upstream_bearer {
+            req = req.bearer_auth(b);
+        }
+        match req.json(&body).send().await {
+            Ok(up) => {
+                let status = up.status();
+                let bytes = up.bytes().await.unwrap_or_default();
+                (status, bytes).into_response()
+            }
+            Err(e) => error_response(axum::http::StatusCode::BAD_GATEWAY, &e.to_string()),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct GenerateKeyRequest {
     label: Option<String>,

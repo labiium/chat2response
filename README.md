@@ -251,14 +251,17 @@ CHAT2RESPONSE_KEYS_DEFAULT_TTL_SECONDS=86400     # Default TTL (seconds) used if
 | Endpoint | Purpose | Requires API Key |
 |----------|---------|------------------|
 | `POST /convert` | Convert request format only | No |
-| `POST /proxy` | Convert + forward to OpenAI | Yes (`X-API-Key`) |
+| `POST /proxy` | Convert + forward to OpenAI | Yes (Authorization: Bearer ...) |
 | `GET /keys` | List API keys (`id`, `label`, `created_at`, `expires_at`, `revoked_at`, `scopes`) | No (protect via network ACL) |
 | `POST /keys/generate` | Create a new API key; body supports `label`, `ttl_seconds` or `expires_at`, and `scopes` | No (protect via network ACL) |
 | `POST /keys/revoke` | Revoke an API key; body: `{ "id": "<key-id>" }` | No (protect via network ACL) |
 | `POST /keys/set_expiration` | Set/clear expiration; body: `{ "id": "...", "expires_at": <epoch>|null, "ttl_seconds": <u64> }` | No (protect via network ACL) |
 
 Notes:
-- The `/proxy` route is authenticated via the `X-API-Key` header. You can pass the raw token or `Bearer <token>`. Example: `-H "X-API-Key: sk_<id>.<secret>"`.
+- `/proxy` authentication (OpenAI-compatible):  
+  - Managed mode (server has `OPENAI_API_KEY`): client sends `Authorization: Bearer <issued_access_token>` (an internally issued access key, not the upstream OpenAI key). The proxy verifies it and uses the server `OPENAI_API_KEY` upstream.  
+  - Passthrough mode (no `OPENAI_API_KEY` set): client sends `Authorization: Bearer <openai_api_key>` which is forwarded upstream unchanged.  
+  Example (managed): `-H "Authorization: Bearer sk_<id>.<secret>"`.
 - Key management endpoints do not implement separate admin auth; deploy behind a trusted network, reverse proxy ACL, or service mesh policy.
 
 Both endpoints accept standard Chat Completions JSON and support `?conversation_id=...` for stateful conversations.
@@ -427,7 +430,7 @@ curl -s -X POST http://localhost:8088/keys/generate \
 # Use it with /proxy
 curl -s -X POST "http://localhost:8088/proxy" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: sk_<id>.<secret>" \
+  -H "Authorization: Bearer sk_<id>.<secret>" \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}'
 
 # List keys

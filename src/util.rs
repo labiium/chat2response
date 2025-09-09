@@ -577,7 +577,23 @@ pub async fn sse_proxy_stream_with_bearer(
     }
 
     // Small tracing for diagnostics
-    let has_bearer = bearer.map(|b| !b.is_empty()).unwrap_or(false);
+    // Determine effective bearer (explicit Authorization header overrides env OPENAI_API_KEY fallback)
+    let effective_bearer = bearer
+        .and_then(|b| {
+            let t = b.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        })
+        .or_else(|| {
+            std::env::var("OPENAI_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty())
+        });
+
+    let has_bearer = effective_bearer.is_some();
     tracing::debug!(
         upstream_mode = %upstream_mode,
         is_chat_mode = is_chat_mode,
@@ -585,8 +601,7 @@ pub async fn sse_proxy_stream_with_bearer(
         "sse_proxy_stream_with_bearer: preparing upstream request"
     );
 
-    // Build upstream request
-    // Build request per-attempt to avoid moved RequestBuilder; retry with backoff
+    // Build upstream request (closure so we can retry easily)
     let build_req = || {
         let mut b = client
             .post(&real_url)
@@ -594,10 +609,8 @@ pub async fn sse_proxy_stream_with_bearer(
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::CONNECTION, "close")
             .json(&body);
-        if let Some(k) = bearer {
-            if !k.is_empty() {
-                b = b.bearer_auth(k);
-            }
+        if let Some(k) = &effective_bearer {
+            b = b.bearer_auth(k);
         }
         b
     };
