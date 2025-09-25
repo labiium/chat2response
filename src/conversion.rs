@@ -2,6 +2,210 @@ use crate::models::chat;
 use crate::models::responses as resp;
 use serde_json::{Map, Value};
 
+pub fn responses_json_to_chat_request(v: &serde_json::Value) -> chat::ChatCompletionRequest {
+    let model = v
+        .get("model")
+        .and_then(|s| s.as_str())
+        .unwrap_or_default()
+        .to_string();
+
+    // Prefer top-level "messages"; fall back to "input.messages"
+    let messages_val = v
+        .get("messages")
+        .cloned()
+        .or_else(|| v.get("input").and_then(|i| i.get("messages")).cloned())
+        .unwrap_or_else(|| serde_json::Value::Array(vec![]));
+
+    let mut messages: Vec<chat::ChatMessage> = Vec::new();
+    if let serde_json::Value::Array(arr) = messages_val {
+        for m in arr {
+            let role_str = m.get("role").and_then(|r| r.as_str()).unwrap_or("user");
+            let role = match role_str {
+                "system" => chat::Role::System,
+                "user" => chat::Role::User,
+                "assistant" => chat::Role::Assistant,
+                "tool" => chat::Role::Tool,
+                "function" => chat::Role::Function,
+                _ => chat::Role::User,
+            };
+            let content = m.get("content").cloned().unwrap_or(serde_json::Value::Null);
+            let name = m
+                .get("name")
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string());
+            let tool_call_id = m
+                .get("tool_call_id")
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string());
+            messages.push(chat::ChatMessage {
+                role,
+                content,
+                name,
+                tool_call_id,
+            });
+        }
+    }
+
+    // Decoding/sampling
+    let temperature = v.get("temperature").and_then(|x| x.as_f64());
+    let top_p = v.get("top_p").and_then(|x| x.as_f64());
+    let max_tokens = v
+        .get("max_output_tokens")
+        .and_then(|x| x.as_u64())
+        .map(|n| n as u32);
+    let stop = v.get("stop").cloned();
+    let presence_penalty = v.get("presence_penalty").and_then(|x| x.as_f64());
+    let frequency_penalty = v.get("frequency_penalty").and_then(|x| x.as_f64());
+    let logit_bias = v
+        .get("logit_bias")
+        .and_then(|lb| lb.as_object())
+        .map(|obj| {
+            let mut map = std::collections::HashMap::<String, f64>::new();
+            for (k, val) in obj {
+                if let Some(f) = val.as_f64() {
+                    map.insert(k.clone(), f);
+                }
+            }
+            map
+        });
+    let user = v
+        .get("user")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    let n = v.get("n").and_then(|x| x.as_u64()).map(|u| u as u32);
+
+    // Tools
+    let tools = v.get("tools").and_then(|t| t.as_array()).map(|arr| {
+        arr.iter()
+            .filter_map(|tdef| {
+                let ttype = tdef.get("type").and_then(|s| s.as_str()).unwrap_or("");
+                if ttype == "function" {
+                    if let Some(fun) = tdef.get("function") {
+                        let name = fun
+                            .get("name")
+                            .and_then(|s| s.as_str())
+                            .map(|s| s.to_string())?;
+                        let description = fun
+                            .get("description")
+                            .and_then(|s| s.as_str())
+                            .map(|s| s.to_string());
+                        let parameters = fun
+                            .get("parameters")
+                            .cloned()
+                            .unwrap_or(serde_json::json!({}));
+                        Some(chat::ToolDefinition::Function {
+                            function: chat::FunctionDef {
+                                name,
+                                description,
+                                parameters,
+                            },
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+    });
+
+    let tool_choice = v.get("tool_choice").cloned();
+
+    // Response format
+    let response_format = v
+        .get("response_format")
+        .and_then(|rf| rf.as_object())
+        .map(|obj| {
+            let kind = obj
+                .get("type")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
+            let mut extra = std::collections::HashMap::new();
+            for (k, val) in obj {
+                if k != "type" {
+                    extra.insert(k.clone(), val.clone());
+                }
+            }
+            chat::ResponseFormat { kind, extra }
+        });
+
+    // Streaming flag
+    let stream = v.get("stream").and_then(|x| x.as_bool());
+
+    chat::ChatCompletionRequest {
+        model,
+        messages,
+        temperature,
+        top_p,
+        max_tokens,
+        stop,
+        presence_penalty,
+        frequency_penalty,
+        logit_bias,
+        user,
+        n,
+        tools,
+        tool_choice,
+        response_format,
+        stream,
+    }
+}
+
+#[cfg(test)]
+mod tests_responses_to_chat {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn converts_responses_to_chat_basic() {
+        let v = json!({
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role":"system","content":"You are helpful."},
+                {"role":"user","content":"Hi"},
+                {"role":"assistant","content":"Hello"}
+            ],
+            "max_output_tokens": 123,
+            "tools": [{
+                "type":"function",
+                "function": {
+                    "name":"lookup",
+                    "description":"Lookup a value",
+                    "parameters":{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}
+                }
+            }],
+            "tool_choice": {"type":"function","function":{"name":"lookup"}},
+            "response_format": {"type":"json_object","schema":{"type":"object"}},
+            "stream": false
+        });
+        let out = responses_json_to_chat_request(&v);
+        assert_eq!(out.model, "gpt-4o-mini");
+        assert_eq!(out.messages.len(), 3);
+        assert_eq!(out.max_tokens, Some(123));
+        assert!(out.tools.as_ref().unwrap().len() == 1);
+        assert!(out.tool_choice.is_some());
+        assert!(out.response_format.is_some());
+        assert_eq!(out.stream, Some(false));
+    }
+
+    #[test]
+    fn falls_back_to_input_messages() {
+        let v = json!({
+            "model": "gpt-4o-mini",
+            "input": {
+                "messages": [
+                    {"role":"user","content":"From input.messages"}
+                ]
+            }
+        });
+        let out = responses_json_to_chat_request(&v);
+        assert_eq!(out.messages.len(), 1);
+        assert_eq!(super::role_to_string(&out.messages[0].role), "user");
+    }
+}
+
 /// Convert an OpenAI Chat Completions request into a Responses API request (wrapping chat messages under `input.messages`).
 ///
 /// Mapping highlights:

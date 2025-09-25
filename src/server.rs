@@ -101,13 +101,24 @@ async fn responses_passthrough(
             Err(e) => error_response(axum::http::StatusCode::BAD_GATEWAY, &e.to_string()),
         }
     } else {
+        // Determine upstream mode and translate if necessary (vLLM/Ollama use Chat)
+        let mode = crate::util::upstream_mode_from_env();
+        let real_url = crate::util::rewrite_responses_url_for_mode(&url, mode);
+        let mut effective_body = body.clone();
+        if matches!(mode, crate::util::UpstreamMode::Chat) {
+            let chat_req = crate::conversion::responses_json_to_chat_request(&effective_body);
+            if let Ok(v) = serde_json::to_value(chat_req) {
+                effective_body = v;
+            }
+        }
+
         let mut req = client
-            .post(&url)
+            .post(&real_url)
             .header(header::CONTENT_TYPE, "application/json");
         if let Some(b) = upstream_bearer {
             req = req.bearer_auth(b);
         }
-        match req.json(&body).send().await {
+        match req.json(&effective_body).send().await {
             Ok(up) => {
                 let status = up.status();
                 let bytes = up.bytes().await.unwrap_or_default();
@@ -179,6 +190,7 @@ async fn convert(
 /// - Streaming: SSE passthrough
 
 // API key management endpoints
+///
 /// Direct passthrough for native Chat Completions requests (no translation).
 /// Accepts the standard OpenAI Chat Completions JSON and forwards it upstream
 /// to {OPENAI_BASE_URL}/chat/completions. Streaming is supported if `stream:true`.

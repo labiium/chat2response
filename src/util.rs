@@ -103,6 +103,38 @@ pub fn env_bind_addr() -> String {
     std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8088".into())
 }
 
+/// Upstream selection for the proxy:
+/// - Responses: talk to /v1/responses with Responses-shaped payload
+/// - Chat: talk to /v1/chat/completions with Chat-shaped payload (vLLM, Ollama, etc.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpstreamMode {
+    Responses,
+    Chat,
+}
+
+/// Read CHAT2RESPONSE_UPSTREAM_MODE from env ("responses" | "chat"), default "responses".
+pub fn upstream_mode_from_env() -> UpstreamMode {
+    match std::env::var("CHAT2RESPONSE_UPSTREAM_MODE")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "chat" => UpstreamMode::Chat,
+        _ => UpstreamMode::Responses,
+    }
+}
+
+/// If mode == Chat and the given URL ends with "/responses", rewrite to "/chat/completions".
+pub fn rewrite_responses_url_for_mode(url: &str, mode: UpstreamMode) -> String {
+    if matches!(mode, UpstreamMode::Chat) && url.ends_with("/responses") {
+        let base = &url[..url.len() - "/responses".len()];
+        format!("{base}/chat/completions")
+    } else {
+        url.to_string()
+    }
+}
+
 /// Shared application state used by the HTTP server and handlers.
 pub struct AppState {
     pub http: reqwest::Client,
@@ -273,11 +305,12 @@ pub fn openai_base_url() -> String {
 /// Forward a request upstream with streaming enabled and return an SSE response.
 ///
 /// Behavior:
-/// - Default mode ("responses"): POST to `{base_url}/responses` with Responses-shaped payload
-/// (Legacy UPSTREAM_MODE chat rewrite removed; proxy always targets Responses endpoint)
+/// - Default: POST to `{base_url}/responses` with Responses-shaped payload.
+/// - If CHAT2RESPONSE_UPSTREAM_MODE=chat: rewrite to `/chat/completions` and translate payload to Chat.
+///   This enables vLLM/Ollama upstreams while keeping a Responses surface.
 ///
 /// Note: For very long streams, consider a true streaming passthrough (hyper upgrade or
-/// axum streaming body). This implementation buffers the upstream SSE into memory.
+///   axum streaming body). This implementation buffers the upstream SSE into memory.
 pub async fn sse_proxy_stream(
     client: &reqwest::Client,
     url: &str,
@@ -292,9 +325,17 @@ pub async fn sse_proxy_stream(
         .ok()
         .filter(|s| !s.is_empty());
 
-    // Simplified: always treat URL as Responses endpoint; no chat mode rewriting
-    let real_url = url.to_string();
-    let body = payload.clone();
+    // Compute upstream URL and payload according to mode
+    let mode = upstream_mode_from_env();
+    let real_url = rewrite_responses_url_for_mode(url, mode);
+    let mut body = payload.clone();
+    if matches!(mode, UpstreamMode::Chat) {
+        // Translate Responses-shaped input to Chat request
+        let chat_req = crate::conversion::responses_json_to_chat_request(&body);
+        if let Ok(v) = serde_json::to_value(chat_req) {
+            body = v;
+        }
+    }
 
     let mut rb = client
         .post(&real_url)
@@ -477,11 +518,18 @@ pub async fn sse_proxy_stream_with_bearer(
     use futures_util::TryStreamExt;
     use http::header;
 
-    // Simplified: always treat URL as Responses endpoint; no chat mode rewriting
-    let real_url = url.to_string();
-    let body = payload.clone();
+    // Compute upstream URL and payload according to mode
+    let mode = upstream_mode_from_env();
+    let real_url = rewrite_responses_url_for_mode(url, mode);
+    let mut body = payload.clone();
+    if matches!(mode, UpstreamMode::Chat) {
+        // Translate Responses-shaped input to Chat request
+        let chat_req = crate::conversion::responses_json_to_chat_request(&body);
+        if let Ok(v) = serde_json::to_value(chat_req) {
+            body = v;
+        }
+    }
 
-    // Small tracing for diagnostics
     // Determine effective bearer (explicit Authorization header overrides env OPENAI_API_KEY fallback)
     let effective_bearer = bearer
         .and_then(|b| {
