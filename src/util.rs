@@ -138,9 +138,17 @@ pub fn rewrite_responses_url_for_mode(url: &str, mode: UpstreamMode) -> String {
 /// Shared application state used by the HTTP server and handlers.
 pub struct AppState {
     pub http: reqwest::Client,
-    pub mcp_manager: Option<std::sync::Arc<crate::mcp_client::McpClientManager>>,
+    pub mcp_manager:
+        Option<std::sync::Arc<tokio::sync::RwLock<crate::mcp_client::McpClientManager>>>,
     /// Optional API key manager for inbound auth (generation/expiration/revocation handled in crate::auth)
     pub api_keys: Option<std::sync::Arc<crate::auth::ApiKeyManager>>,
+    /// System prompt configuration with runtime reload support
+    pub system_prompt_config:
+        std::sync::Arc<tokio::sync::RwLock<crate::system_prompt_config::SystemPromptConfig>>,
+    /// Path to MCP config file for reload operations
+    pub mcp_config_path: Option<String>,
+    /// Path to system prompt config file for reload operations
+    pub system_prompt_config_path: Option<String>,
 }
 
 /// Build an HTTP client honoring proxy and timeout environment variables.
@@ -223,6 +231,11 @@ impl Default for AppState {
                     .ok()
                     .map(std::sync::Arc::new)
             })(),
+            system_prompt_config: std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::system_prompt_config::SystemPromptConfig::empty(),
+            )),
+            mcp_config_path: None,
+            system_prompt_config_path: None,
         }
     }
 }
@@ -232,7 +245,7 @@ impl AppState {
     pub fn with_mcp_manager(mcp_manager: crate::mcp_client::McpClientManager) -> Self {
         Self {
             http: build_http_client_from_env(),
-            mcp_manager: Some(std::sync::Arc::new(mcp_manager)),
+            mcp_manager: Some(std::sync::Arc::new(tokio::sync::RwLock::new(mcp_manager))),
             api_keys: (|| {
                 if let Ok(url) = std::env::var("CHAT2RESPONSE_REDIS_URL") {
                     let u = url.trim().to_string();
@@ -246,12 +259,17 @@ impl AppState {
                     .ok()
                     .map(std::sync::Arc::new)
             })(),
+            system_prompt_config: std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::system_prompt_config::SystemPromptConfig::empty(),
+            )),
+            mcp_config_path: None,
+            system_prompt_config_path: None,
         }
     }
 
     /// Create AppState with MCP manager wrapped in Arc
     pub fn with_mcp_manager_arc(
-        mcp_manager: std::sync::Arc<crate::mcp_client::McpClientManager>,
+        mcp_manager: std::sync::Arc<tokio::sync::RwLock<crate::mcp_client::McpClientManager>>,
     ) -> Self {
         Self {
             http: build_http_client_from_env(),
@@ -269,6 +287,11 @@ impl AppState {
                     .ok()
                     .map(std::sync::Arc::new)
             })(),
+            system_prompt_config: std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::system_prompt_config::SystemPromptConfig::empty(),
+            )),
+            mcp_config_path: None,
+            system_prompt_config_path: None,
         }
     }
     /// Read the OpenAI API key from environment if present. Optional for /proxy.

@@ -10,11 +10,12 @@ Chat2Response bridges the gap between OpenAI's legacy Chat Completions API and t
 
 Run the server:
 ```bash
-chat2response [mcp.json] [--keys-backend=redis://...|sled:<path>|memory]
+chat2response [mcp.json] [--keys-backend=redis://...|sled:<path>|memory] [--system-prompt-config=system_prompt.json]
 ```
 
 - `mcp.json` positional: if provided as the first non-flag argument, the server loads and connects to MCP servers defined in that file.
 - `--keys-backend`: selects the API key storage backend at runtime:
+- `--system-prompt-config`: path to system prompt configuration file for automatic prompt injection.
   - `redis://...` uses Redis with an r2d2 connection pool (pool size via `CHAT2RESPONSE_REDIS_POOL_MAX`).
   - `sled:<path>` uses an embedded sled database at the given path.
   - `memory` uses an in-memory, non-persistent store.
@@ -254,10 +255,16 @@ CHAT2RESPONSE_KEYS_DEFAULT_TTL_SECONDS=86400     # Default TTL (seconds) used if
 |----------|---------|------------------|
 | `POST /convert` | Convert request format only | No |
 | `POST /proxy` | Convert + forward to OpenAI | Yes (Authorization: Bearer ...) |
+| `POST /v1/chat/completions` | Native Chat Completions passthrough with system prompt injection | Yes |
+| `POST /v1/responses` | Native Responses API passthrough with system prompt injection | Yes |
+| `GET /status` | Service status, available routes, and feature flags | No |
 | `GET /keys` | List API keys (`id`, `label`, `created_at`, `expires_at`, `revoked_at`, `scopes`) | No (protect via network ACL) |
 | `POST /keys/generate` | Create a new API key; body supports `label`, `ttl_seconds` or `expires_at`, and `scopes` | No (protect via network ACL) |
 | `POST /keys/revoke` | Revoke an API key; body: `{ "id": "<key-id>" }` | No (protect via network ACL) |
 | `POST /keys/set_expiration` | Set/clear expiration; body: `{ "id": "...", "expires_at": <epoch>|null, "ttl_seconds": <u64> }` | No (protect via network ACL) |
+| `POST /reload/mcp` | Reload MCP configuration at runtime | No (protect via network ACL) |
+| `POST /reload/system_prompt` | Reload system prompt configuration at runtime | No (protect via network ACL) |
+| `POST /reload/all` | Reload both MCP and system prompt configurations | No (protect via network ACL) |
 
 Notes:
 - `/proxy` authentication (OpenAI-compatible):  
@@ -371,6 +378,177 @@ curl -X POST http://localhost:8088/proxy \
 ```
 
 The LLM will automatically have access to both `brave-search_search` and `filesystem_write_file` tools.
+
+## Runtime Configuration Reloading
+
+Chat2Response supports **runtime reloading** of both MCP tools and system prompts without restarting the server. This enables dynamic configuration updates in production environments.
+
+### MCP Runtime Reload
+
+Once started with an MCP configuration file, you can reload the MCP configuration at runtime:
+
+```bash
+# Start with MCP configuration
+chat2response mcp.json
+
+# Later, update mcp.json and reload without restarting
+curl -X POST http://localhost:8088/reload/mcp
+```
+
+Response:
+```json
+{
+  "success": true,
+  "message": "MCP configuration reloaded",
+  "servers": ["filesystem", "brave-search"],
+  "count": 2
+}
+```
+
+### System Prompt Configuration
+
+System prompts can be injected into all requests automatically. Create a `system_prompt.json` configuration file:
+
+```json
+{
+  "global": "You are a helpful AI assistant. Always be respectful and informative.",
+  "per_model": {
+    "gpt-4": "You are an expert AI assistant powered by GPT-4.",
+    "claude-3-5-sonnet-20241022": "You are Claude, created by Anthropic."
+  },
+  "per_api": {
+    "chat": "This is a Chat Completions API request.",
+    "responses": "This is a Responses API request."
+  },
+  "injection_mode": "prepend",
+  "enabled": true
+}
+```
+
+**Configuration Fields:**
+- `global`: Default system prompt for all requests
+- `per_model`: Model-specific prompts (override `global`)
+- `per_api`: API-specific prompts for "chat" or "responses" endpoints
+- `injection_mode`: How to inject the prompt:
+  - `"prepend"` (default): Add before existing system messages
+  - `"append"`: Add after existing system messages
+  - `"replace"`: Replace all existing system messages
+- `enabled`: Toggle system prompt injection on/off
+
+**Priority order:** `per_model` > `per_api` > `global`
+
+### Starting with System Prompts
+
+```bash
+# Start with both MCP and system prompt configurations
+chat2response mcp.json --system-prompt-config=system_prompt.json
+```
+
+### Reload System Prompts at Runtime
+
+```bash
+# Update system_prompt.json, then reload
+curl -X POST http://localhost:8088/reload/system_prompt
+```
+
+Response:
+```json
+{
+  "success": true,
+  "message": "System prompt configuration reloaded",
+  "enabled": true,
+  "has_global": true,
+  "per_model_count": 2,
+  "per_api_count": 2,
+  "injection_mode": "prepend"
+}
+```
+
+### Reload Everything at Once
+
+```bash
+# Reload both MCP and system prompt configurations
+curl -X POST http://localhost:8088/reload/all
+```
+
+Response:
+```json
+{
+  "mcp": {
+    "success": true,
+    "message": "MCP configuration reloaded",
+    "servers": ["filesystem", "brave-search"],
+    "count": 2
+  },
+  "system_prompt": {
+    "success": true,
+    "message": "System prompt configuration reloaded",
+    "enabled": true,
+    "has_global": true,
+    "per_model_count": 2,
+    "per_api_count": 2,
+    "injection_mode": "prepend"
+  }
+}
+```
+
+### System Prompt Injection Behavior
+
+System prompts are automatically injected into:
+- `/v1/chat/completions` — Chat Completions API requests
+- `/v1/responses` — Responses API requests  
+- `/convert` — Conversion endpoint
+
+**Example with system prompt injection:**
+
+Without system prompt config:
+```json
+{
+  "model": "gpt-4",
+  "messages": [
+    {"role": "user", "content": "Hello"}
+  ]
+}
+```
+
+With `global: "You are helpful"` and `injection_mode: "prepend"`:
+```json
+{
+  "model": "gpt-4",
+  "messages": [
+    {"role": "system", "content": "You are helpful"},
+    {"role": "user", "content": "Hello"}
+  ]
+}
+```
+
+### Check Configuration Status
+
+```bash
+curl http://localhost:8088/status
+```
+
+Response includes runtime configuration details:
+```json
+{
+  "name": "chat2response",
+  "version": "0.1.1",
+  "proxy_enabled": true,
+  "routes": [...],
+  "features": {
+    "mcp": {
+      "enabled": true,
+      "config_path": "mcp.json",
+      "reloadable": true
+    },
+    "system_prompt": {
+      "enabled": true,
+      "config_path": "system_prompt.json",
+      "reloadable": true
+    }
+  }
+}
+```
 
 ## Installation
 

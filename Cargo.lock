@@ -274,6 +274,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "sled",
+ "tempfile",
  "thiserror",
  "tokio",
  "tower",

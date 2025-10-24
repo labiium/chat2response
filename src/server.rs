@@ -9,7 +9,6 @@ use axum::{extract::State, response::Response};
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::conversion::to_responses_request_with_mcp;
 use crate::models::chat::ChatCompletionRequest;
 use crate::util::AppState;
 
@@ -30,8 +29,43 @@ pub struct ConvertQuery {
 async fn responses_passthrough(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<serde_json::Value>,
+    Json(mut body): Json<serde_json::Value>,
 ) -> Response {
+    // Apply system prompt injection if configured
+    let system_prompt_guard = state.system_prompt_config.read().await;
+    let model = body.get("model").and_then(|v| v.as_str());
+
+    if let Some(prompt) = system_prompt_guard.get_prompt(model, Some("responses")) {
+        // Inject system prompt into messages
+        if let Some(messages) = body.get_mut("messages").and_then(|v| v.as_array_mut()) {
+            let system_msg = serde_json::json!({
+                "role": "system",
+                "content": prompt
+            });
+
+            match system_prompt_guard.injection_mode.as_str() {
+                "append" => {
+                    let last_system_pos = messages
+                        .iter()
+                        .rposition(|m| m.get("role").and_then(|r| r.as_str()) == Some("system"));
+                    if let Some(pos) = last_system_pos {
+                        messages.insert(pos + 1, system_msg);
+                    } else {
+                        messages.push(system_msg);
+                    }
+                }
+                "replace" => {
+                    messages.retain(|m| m.get("role").and_then(|r| r.as_str()) != Some("system"));
+                    messages.insert(0, system_msg);
+                }
+                _ => {
+                    // Default: prepend
+                    messages.insert(0, system_msg);
+                }
+            }
+        }
+    }
+    drop(system_prompt_guard);
     let base = openai_base_url();
     let url = format!("{}/responses", base);
 
@@ -148,13 +182,16 @@ pub fn build_router_with_state(app_state: AppState) -> Router {
         .route("/keys/generate", post(generate_key))
         .route("/keys/revoke", post(revoke_key))
         .route("/keys/set_expiration", post(set_key_expiration))
+        .route("/reload/mcp", post(reload_mcp))
+        .route("/reload/system_prompt", post(reload_system_prompt))
+        .route("/reload/all", post(reload_all))
         .with_state(state.clone());
 
     router.layer(cors_layer_from_env())
 }
 
 /// Service status endpoint to expose feature flags and available routes.
-async fn status() -> impl IntoResponse {
+async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let proxy_enabled: bool = true;
     let routes = vec![
         "/status",
@@ -165,12 +202,37 @@ async fn status() -> impl IntoResponse {
         "/keys/generate",
         "/keys/revoke",
         "/keys/set_expiration",
+        "/reload/mcp",
+        "/reload/system_prompt",
+        "/reload/all",
     ];
+
+    // Get current configuration status
+    let mcp_enabled = state.mcp_manager.is_some();
+    let mcp_config_path = state.mcp_config_path.as_deref();
+    let system_prompt_config_path = state.system_prompt_config_path.as_deref();
+
+    let system_prompt_guard = state.system_prompt_config.read().await;
+    let system_prompt_enabled = system_prompt_guard.enabled;
+    drop(system_prompt_guard);
+
     Json(serde_json::json!({
         "name": "chat2response",
         "version": env!("CARGO_PKG_VERSION"),
         "proxy_enabled": proxy_enabled,
-        "routes": routes
+        "routes": routes,
+        "features": {
+            "mcp": {
+                "enabled": mcp_enabled,
+                "config_path": mcp_config_path,
+                "reloadable": mcp_config_path.is_some()
+            },
+            "system_prompt": {
+                "enabled": system_prompt_enabled,
+                "config_path": system_prompt_config_path,
+                "reloadable": system_prompt_config_path.is_some()
+            }
+        }
     }))
 }
 
@@ -180,8 +242,22 @@ async fn convert(
     Query(q): Query<ConvertQuery>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> impl IntoResponse {
-    let mcp_manager = state.mcp_manager.as_ref().map(|m| m.as_ref());
-    let converted = to_responses_request_with_mcp(&req, q.conversation_id, mcp_manager).await;
+    let mcp_manager_guard = if let Some(mgr) = state.mcp_manager.as_ref() {
+        Some(mgr.read().await)
+    } else {
+        None
+    };
+
+    let system_prompt_guard = state.system_prompt_config.read().await;
+
+    let converted = crate::conversion::to_responses_request_with_mcp_and_prompt(
+        &req,
+        q.conversation_id,
+        mcp_manager_guard.as_deref(),
+        Some(&*system_prompt_guard),
+    )
+    .await;
+
     Json(converted)
 }
 
@@ -197,8 +273,26 @@ async fn convert(
 async fn chat_completions_passthrough(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<serde_json::Value>,
+    Json(mut body): Json<serde_json::Value>,
 ) -> Response {
+    // Apply system prompt injection if configured
+    let system_prompt_guard = state.system_prompt_config.read().await;
+    let model = body.get("model").and_then(|v| v.as_str());
+
+    if let Some(prompt) = system_prompt_guard.get_prompt(model, Some("chat")) {
+        // Deserialize to ChatCompletionRequest for injection
+        if let Ok(mut req) = serde_json::from_value::<ChatCompletionRequest>(body.clone()) {
+            crate::conversion::inject_system_prompt_chat(
+                &mut req,
+                &prompt,
+                &system_prompt_guard.injection_mode,
+            );
+            if let Ok(modified) = serde_json::to_value(&req) {
+                body = modified;
+            }
+        }
+    }
+    drop(system_prompt_guard);
     let base = openai_base_url();
     let url = format!("{}/chat/completions", base);
 
@@ -446,4 +540,219 @@ async fn set_key_expiration(
             "API key manager unavailable",
         ),
     }
+}
+
+/// Reload MCP configuration from file at runtime
+async fn reload_mcp(State(state): State<Arc<AppState>>) -> axum::response::Response {
+    let config_path = match &state.mcp_config_path {
+        Some(path) => path.clone(),
+        None => {
+            return error_response(
+                axum::http::StatusCode::BAD_REQUEST,
+                "No MCP config path configured - cannot reload",
+            );
+        }
+    };
+
+    tracing::info!("Reloading MCP configuration from: {}", config_path);
+
+    // Load new config
+    let config = match crate::mcp_config::McpConfig::load_from_file(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Failed to load MCP config: {}", e);
+            return error_response(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to load MCP config: {}", e),
+            );
+        }
+    };
+
+    // Create new MCP client manager
+    let new_manager = match crate::mcp_client::McpClientManager::new(config).await {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!("Failed to initialize MCP client manager: {}", e);
+            return error_response(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to initialize MCP manager: {}", e),
+            );
+        }
+    };
+
+    // Get connected servers for response
+    let connected_servers = new_manager.connected_servers();
+    let server_count = connected_servers.len();
+
+    // Replace the manager
+    if let Some(manager_arc) = &state.mcp_manager {
+        let mut manager_guard = manager_arc.write().await;
+        *manager_guard = new_manager;
+        tracing::info!(
+            "MCP configuration reloaded successfully with {} servers",
+            server_count
+        );
+
+        Json(serde_json::json!({
+            "success": true,
+            "message": "MCP configuration reloaded",
+            "servers": connected_servers,
+            "count": server_count
+        }))
+        .into_response()
+    } else {
+        error_response(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "MCP manager not initialized",
+        )
+    }
+}
+
+/// Reload system prompt configuration from file at runtime
+async fn reload_system_prompt(State(state): State<Arc<AppState>>) -> axum::response::Response {
+    let config_path = match &state.system_prompt_config_path {
+        Some(path) => path.clone(),
+        None => {
+            return error_response(
+                axum::http::StatusCode::BAD_REQUEST,
+                "No system prompt config path configured - cannot reload",
+            );
+        }
+    };
+
+    tracing::info!(
+        "Reloading system prompt configuration from: {}",
+        config_path
+    );
+
+    // Load new config
+    let config = match crate::system_prompt_config::SystemPromptConfig::load_from_file(&config_path)
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Failed to load system prompt config: {}", e);
+            return error_response(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to load system prompt config: {}", e),
+            );
+        }
+    };
+
+    // Replace the config
+    let mut config_guard = state.system_prompt_config.write().await;
+    *config_guard = config.clone();
+
+    tracing::info!("System prompt configuration reloaded successfully");
+
+    Json(serde_json::json!({
+        "success": true,
+        "message": "System prompt configuration reloaded",
+        "enabled": config.enabled,
+        "has_global": config.global.is_some(),
+        "per_model_count": config.per_model.len(),
+        "per_api_count": config.per_api.len(),
+        "injection_mode": config.injection_mode
+    }))
+    .into_response()
+}
+
+/// Reload both MCP and system prompt configurations
+async fn reload_all(State(state): State<Arc<AppState>>) -> axum::response::Response {
+    let mut results = serde_json::json!({
+        "mcp": { "success": false, "message": "Not attempted" },
+        "system_prompt": { "success": false, "message": "Not attempted" }
+    });
+
+    // Reload MCP if path is configured
+    if let Some(mcp_path) = &state.mcp_config_path {
+        tracing::info!("Reloading MCP configuration from: {}", mcp_path);
+
+        match crate::mcp_config::McpConfig::load_from_file(mcp_path) {
+            Ok(config) => match crate::mcp_client::McpClientManager::new(config).await {
+                Ok(new_manager) => {
+                    let connected_servers = new_manager.connected_servers();
+                    let server_count = connected_servers.len();
+
+                    if let Some(manager_arc) = &state.mcp_manager {
+                        let mut manager_guard = manager_arc.write().await;
+                        *manager_guard = new_manager;
+
+                        results["mcp"] = serde_json::json!({
+                            "success": true,
+                            "message": "MCP configuration reloaded",
+                            "servers": connected_servers,
+                            "count": server_count
+                        });
+
+                        tracing::info!("MCP configuration reloaded successfully");
+                    } else {
+                        results["mcp"] = serde_json::json!({
+                            "success": false,
+                            "message": "MCP manager not initialized"
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to initialize MCP client manager: {}", e);
+                    results["mcp"] = serde_json::json!({
+                        "success": false,
+                        "message": format!("Failed to initialize MCP manager: {}", e)
+                    });
+                }
+            },
+            Err(e) => {
+                tracing::error!("Failed to load MCP config: {}", e);
+                results["mcp"] = serde_json::json!({
+                    "success": false,
+                    "message": format!("Failed to load MCP config: {}", e)
+                });
+            }
+        }
+    } else {
+        results["mcp"] = serde_json::json!({
+            "success": false,
+            "message": "No MCP config path configured"
+        });
+    }
+
+    // Reload system prompt if path is configured
+    if let Some(prompt_path) = &state.system_prompt_config_path {
+        tracing::info!(
+            "Reloading system prompt configuration from: {}",
+            prompt_path
+        );
+
+        match crate::system_prompt_config::SystemPromptConfig::load_from_file(prompt_path) {
+            Ok(config) => {
+                let mut config_guard = state.system_prompt_config.write().await;
+                *config_guard = config.clone();
+
+                results["system_prompt"] = serde_json::json!({
+                    "success": true,
+                    "message": "System prompt configuration reloaded",
+                    "enabled": config.enabled,
+                    "has_global": config.global.is_some(),
+                    "per_model_count": config.per_model.len(),
+                    "per_api_count": config.per_api.len(),
+                    "injection_mode": config.injection_mode
+                });
+
+                tracing::info!("System prompt configuration reloaded successfully");
+            }
+            Err(e) => {
+                tracing::error!("Failed to load system prompt config: {}", e);
+                results["system_prompt"] = serde_json::json!({
+                    "success": false,
+                    "message": format!("Failed to load system prompt config: {}", e)
+                });
+            }
+        }
+    } else {
+        results["system_prompt"] = serde_json::json!({
+            "success": false,
+            "message": "No system prompt config path configured"
+        });
+    }
+
+    Json(results).into_response()
 }

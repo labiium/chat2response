@@ -293,6 +293,121 @@ pub async fn to_responses_request_with_mcp(
     request
 }
 
+/// Convert an OpenAI Chat Completions request with MCP tools and system prompt injection
+pub async fn to_responses_request_with_mcp_and_prompt(
+    src: &chat::ChatCompletionRequest,
+    conversation: Option<String>,
+    mcp_manager: Option<&crate::mcp_client::McpClientManager>,
+    system_prompt_config: Option<&crate::system_prompt_config::SystemPromptConfig>,
+) -> resp::ResponsesRequest {
+    let mut request = to_responses_request(src, conversation);
+
+    // Add MCP tools if manager is available
+    if let Some(manager) = mcp_manager {
+        if let Ok(mcp_tools) = manager.list_all_tools().await {
+            let mcp_tool_definitions: Vec<resp::ResponsesToolDefinition> = mcp_tools
+                .iter()
+                .map(|tool| {
+                    // Convert MCP tool to Responses tool definition
+                    resp::ResponsesToolDefinition::Function {
+                        function: resp::ResponsesToolFunction {
+                            name: format!("{}_{}", tool.server_name, tool.name),
+                            description: tool.description.clone(),
+                            parameters: tool.input_schema.clone(),
+                        },
+                    }
+                })
+                .collect();
+
+            // Merge with existing tools
+            let mut all_tools = request.tools.unwrap_or_default();
+            all_tools.extend(mcp_tool_definitions);
+            request.tools = if all_tools.is_empty() {
+                None
+            } else {
+                Some(all_tools)
+            };
+        }
+    }
+
+    // Inject system prompt if configured
+    if let Some(config) = system_prompt_config {
+        if let Some(prompt) = config.get_prompt(Some(&request.model), Some("responses")) {
+            inject_system_prompt(&mut request.messages, &prompt, &config.injection_mode);
+        }
+    }
+
+    request
+}
+
+/// Inject system prompt into Chat Completions request
+pub fn inject_system_prompt_chat(req: &mut chat::ChatCompletionRequest, prompt: &str, mode: &str) {
+    let system_message = chat::ChatMessage {
+        role: chat::Role::System,
+        content: serde_json::Value::String(prompt.to_string()),
+        name: None,
+        tool_call_id: None,
+    };
+
+    match mode {
+        "append" => {
+            // Find last system message position or append at end
+            let last_system_pos = req
+                .messages
+                .iter()
+                .rposition(|m| matches!(m.role, chat::Role::System));
+
+            if let Some(pos) = last_system_pos {
+                req.messages.insert(pos + 1, system_message);
+            } else {
+                req.messages.push(system_message);
+            }
+        }
+        "replace" => {
+            // Remove all existing system messages and prepend new one
+            req.messages
+                .retain(|m| !matches!(m.role, chat::Role::System));
+            req.messages.insert(0, system_message);
+        }
+        _ => {
+            // Default: prepend
+            req.messages.insert(0, system_message);
+        }
+    }
+}
+
+/// Inject system prompt into Responses messages
+pub fn inject_system_prompt(messages: &mut Vec<resp::ResponsesMessage>, prompt: &str, mode: &str) {
+    let system_message = resp::ResponsesMessage {
+        role: "system".to_string(),
+        content: serde_json::Value::String(prompt.to_string()),
+        name: None,
+        tool_call_id: None,
+    };
+
+    match mode {
+        "append" => {
+            // Find last system message position or append at end
+            let last_system_pos = messages.iter().rposition(|m| m.role == "system");
+
+            if let Some(pos) = last_system_pos {
+                messages.insert(pos + 1, system_message);
+            } else {
+                messages.push(system_message);
+            }
+        }
+        "replace" => {
+            // Remove all existing system messages and prepend new one
+            messages.retain(|m| m.role != "system");
+            messages.insert(0, system_message);
+        }
+        _ => {
+            // Default: prepend
+            messages.insert(0, system_message);
+        }
+    }
+}
+
 fn map_messages(src: &[chat::ChatMessage]) -> Vec<resp::ResponsesMessage> {
     src.iter()
         .map(|m| resp::ResponsesMessage {

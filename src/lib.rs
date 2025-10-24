@@ -25,6 +25,7 @@ pub mod mcp_client;
 pub mod mcp_config;
 pub mod models;
 pub mod server;
+pub mod system_prompt_config;
 pub mod util;
 
 // Re-export the primary conversion function for ergonomic library use.

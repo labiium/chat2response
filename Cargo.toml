@@ -62,7 +62,7 @@ redis = "0.24"
 
 
 [dev-dependencies]
-# nothing additional yet; tests use the main crate and serde_json which is already a dependency
+tempfile = "3"
 
 [features]
 default = ["sled"]
