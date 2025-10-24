@@ -1,4 +1,4 @@
-use axum::response::{IntoResponse, Response};
+use actix_web::HttpResponse;
 use http::StatusCode;
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -315,9 +315,9 @@ impl AppState {
 }
 
 /// Build a JSON error response with the given HTTP status and message.
-pub fn error_response(status: StatusCode, msg: &str) -> Response {
+pub fn error_response(status: StatusCode, msg: &str) -> HttpResponse {
     let body = serde_json::json!({ "error": { "message": msg } });
-    (status, axum::Json(body)).into_response()
+    HttpResponse::build(actix_web::http::StatusCode::from_u16(status.as_u16()).unwrap()).json(body)
 }
 
 /// Resolve the OpenAI base URL from environment or use the default public endpoint.
@@ -332,14 +332,12 @@ pub fn openai_base_url() -> String {
 /// - If CHAT2RESPONSE_UPSTREAM_MODE=chat: rewrite to `/chat/completions` and translate payload to Chat.
 ///   This enables vLLM/Ollama upstreams while keeping a Responses surface.
 ///
-/// Note: For very long streams, consider a true streaming passthrough (hyper upgrade or
-///   axum streaming body). This implementation buffers the upstream SSE into memory.
+/// Note: For very long streams, consider a true streaming passthrough.
 pub async fn sse_proxy_stream(
     client: &reqwest::Client,
     url: &str,
     payload: &serde_json::Value,
-) -> Result<Response, anyhow::Error> {
-    use axum::body::Body;
+) -> Result<HttpResponse, anyhow::Error> {
     use bytes::Bytes;
     use futures_util::TryStreamExt;
     use http::header;
@@ -376,7 +374,10 @@ pub async fn sse_proxy_stream(
     let status = resp.status();
     if !status.is_success() {
         let bytes = resp.bytes().await.unwrap_or_default();
-        return Ok((status, bytes).into_response());
+        return Ok(HttpResponse::build(
+            actix_web::http::StatusCode::from_u16(status.as_u16()).unwrap(),
+        )
+        .body(bytes));
     }
 
     // Stream SSE passthrough without buffering the entire response.
@@ -386,19 +387,21 @@ pub async fn sse_proxy_stream(
         .map_err(|e| std::io::Error::other(e.to_string()))
         .map_ok(Bytes::from);
 
-    let mut builder = http::Response::builder().status(StatusCode::OK);
+    let mut response = HttpResponse::Ok();
     if let Some(ct) = upstream_ct {
-        builder = builder.header(header::CONTENT_TYPE, ct);
+        if let Ok(ct_str) = ct.to_str() {
+            response.insert_header(("content-type", ct_str));
+        } else {
+            response.insert_header(("content-type", "text/event-stream"));
+        }
     } else {
-        builder = builder.header(header::CONTENT_TYPE, "text/event-stream");
+        response.insert_header(("content-type", "text/event-stream"));
     }
-    let response = builder
-        .header("Cache-Control", "no-cache")
-        .header("Connection", "keep-alive")
-        .body(Body::from_stream(stream))
-        .unwrap();
 
-    Ok(response)
+    Ok(response
+        .insert_header(("cache-control", "no-cache"))
+        .insert_header(("connection", "keep-alive"))
+        .streaming(stream))
 }
 
 /// Best-effort derivation of a single-string "input" from a Responses-shaped payload.
@@ -460,7 +463,7 @@ pub async fn post_responses_with_input_retry(
     url: &str,
     payload: &serde_json::Value,
     bearer: Option<String>,
-) -> Result<Response, anyhow::Error> {
+) -> Result<HttpResponse, anyhow::Error> {
     let effective_bearer = bearer
         .and_then(|s| if s.is_empty() { None } else { Some(s) })
         .or_else(|| {
@@ -478,7 +481,10 @@ pub async fn post_responses_with_input_retry(
     let status = first.status();
     if status != http::StatusCode::BAD_REQUEST {
         let bytes = first.bytes().await.unwrap_or_default();
-        return Ok((status, bytes).into_response());
+        return Ok(HttpResponse::build(
+            actix_web::http::StatusCode::from_u16(status.as_u16()).unwrap(),
+        )
+        .body(bytes));
     }
     let body_bytes = first.bytes().await.unwrap_or_default();
     let body_text = String::from_utf8_lossy(&body_bytes);
@@ -487,7 +493,10 @@ pub async fn post_responses_with_input_retry(
         || body_text.contains("\"input\"")
         || body_text.contains("Field required") && body_text.contains("input");
     if !needs_input {
-        return Ok((status, body_bytes).into_response());
+        return Ok(HttpResponse::build(
+            actix_web::http::StatusCode::from_u16(status.as_u16()).unwrap(),
+        )
+        .body(body_bytes));
     }
 
     // Retry with derived input injected (do not overwrite if already present).
@@ -509,7 +518,10 @@ pub async fn post_responses_with_input_retry(
 
     let status2 = second.status();
     let bytes2 = second.bytes().await.unwrap_or_default();
-    Ok((status2, bytes2).into_response())
+    Ok(
+        HttpResponse::build(actix_web::http::StatusCode::from_u16(status2.as_u16()).unwrap())
+            .body(bytes2),
+    )
 }
 
 /// Simple HTTP GET helper supporting optional Bearer auth and proxy (via provided client).
@@ -517,7 +529,7 @@ pub async fn http_get_with_bearer(
     client: &reqwest::Client,
     url: &str,
     bearer: Option<&str>,
-) -> Result<Response, anyhow::Error> {
+) -> Result<HttpResponse, anyhow::Error> {
     let mut rb = client.get(url);
     if let Some(tok) = bearer {
         if !tok.is_empty() {
@@ -527,7 +539,10 @@ pub async fn http_get_with_bearer(
     let resp = rb.send().await?;
     let status = resp.status();
     let bytes = resp.bytes().await.unwrap_or_default();
-    Ok((status, bytes).into_response())
+    Ok(
+        HttpResponse::build(actix_web::http::StatusCode::from_u16(status.as_u16()).unwrap())
+            .body(bytes),
+    )
 }
 
 pub async fn sse_proxy_stream_with_bearer(
@@ -535,8 +550,7 @@ pub async fn sse_proxy_stream_with_bearer(
     url: &str,
     payload: &serde_json::Value,
     bearer: Option<&str>,
-) -> Result<Response, anyhow::Error> {
-    use axum::body::Body;
+) -> Result<HttpResponse, anyhow::Error> {
     use bytes::Bytes;
     use futures_util::TryStreamExt;
     use http::header;
@@ -618,7 +632,10 @@ pub async fn sse_proxy_stream_with_bearer(
     let status = resp.status();
     if !status.is_success() {
         let bytes = resp.bytes().await.unwrap_or_default();
-        return Ok((status, bytes).into_response());
+        return Ok(HttpResponse::build(
+            actix_web::http::StatusCode::from_u16(status.as_u16()).unwrap(),
+        )
+        .body(bytes));
     }
 
     // Stream SSE passthrough without buffering the entire response.
@@ -628,129 +645,111 @@ pub async fn sse_proxy_stream_with_bearer(
         .map_err(|e| std::io::Error::other(e.to_string()))
         .map_ok(Bytes::from);
 
-    let mut builder = http::Response::builder().status(StatusCode::OK);
+    let mut response = HttpResponse::Ok();
     if let Some(ct) = upstream_ct {
-        builder = builder.header(header::CONTENT_TYPE, ct);
+        if let Ok(ct_str) = ct.to_str() {
+            response.insert_header(("content-type", ct_str));
+        } else {
+            response.insert_header(("content-type", "text/event-stream"));
+        }
     } else {
-        builder = builder.header(header::CONTENT_TYPE, "text/event-stream");
+        response.insert_header(("content-type", "text/event-stream"));
     }
-    let response = builder
-        .header("Cache-Control", "no-cache")
-        .header("Connection", "keep-alive")
-        .body(Body::from_stream(stream))
-        .unwrap();
 
-    Ok(response)
+    Ok(response
+        .insert_header(("cache-control", "no-cache"))
+        .insert_header(("connection", "keep-alive"))
+        .streaming(stream))
 }
 
-#[allow(dead_code)]
-/// Build a CORS layer from environment variables.
+/// Build a CORS configuration from environment variables for Actix-web.
 ///
 /// Environment variables:
 /// - CORS_ALLOWED_ORIGINS: "*" or comma-separated origins (e.g., "https://a.com, https://b.com")
 /// - CORS_ALLOWED_METHODS: "*" or comma-separated methods (e.g., "GET,POST,OPTIONS")
 /// - CORS_ALLOWED_HEADERS: "*" or comma-separated request header names
 /// - CORS_ALLOW_CREDENTIALS: enable with 1,true,yes,on
-/// - CORS_MAX_AGE: max age in seconds (u64)
+/// - CORS_MAX_AGE: max age in seconds (usize)
 ///
-/// Defaults are permissive (Any) to match prior behavior when not configured.
-pub fn cors_layer_from_env() -> tower_http::cors::CorsLayer {
-    use std::time::Duration;
-
-    let mut layer = tower_http::cors::CorsLayer::new();
+/// Defaults are permissive to match prior behavior when not configured.
+pub fn cors_config_from_env() -> actix_cors::Cors {
+    let mut cors = actix_cors::Cors::default();
 
     // Allowed origins
     if let Ok(origins) = std::env::var("CORS_ALLOWED_ORIGINS") {
         let s = origins.trim();
         if s == "*" {
-            layer = layer.allow_origin(tower_http::cors::Any);
+            cors = cors.allow_any_origin();
         } else {
-            let mut vals = Vec::new();
             for part in s.split(',') {
                 let p = part.trim();
-                if p.is_empty() {
-                    continue;
+                if !p.is_empty() {
+                    cors = cors.allowed_origin(p);
                 }
-                if let Ok(hv) = http::HeaderValue::from_str(p) {
-                    vals.push(hv);
-                }
-            }
-            if !vals.is_empty() {
-                layer = layer.allow_origin(tower_http::cors::AllowOrigin::list(vals));
-            } else {
-                layer = layer.allow_origin(tower_http::cors::Any);
             }
         }
     } else {
-        layer = layer.allow_origin(tower_http::cors::Any);
+        cors = cors.allow_any_origin();
     }
 
     // Allowed methods
     if let Ok(methods) = std::env::var("CORS_ALLOWED_METHODS") {
         let s = methods.trim();
         if s == "*" {
-            layer = layer.allow_methods(tower_http::cors::Any);
+            cors = cors.allow_any_method();
         } else {
-            let mut vals = Vec::new();
+            let mut methods = Vec::new();
             for part in s.split(',') {
-                let p = part.trim().to_ascii_uppercase();
-                if p.is_empty() {
-                    continue;
-                }
-                if let Ok(m) = http::Method::from_bytes(p.as_bytes()) {
-                    vals.push(m);
+                let p = part.trim();
+                if !p.is_empty() {
+                    methods.push(p);
                 }
             }
-            if !vals.is_empty() {
-                layer = layer.allow_methods(tower_http::cors::AllowMethods::list(vals));
-            } else {
-                layer = layer.allow_methods(tower_http::cors::Any);
+            if !methods.is_empty() {
+                cors = cors.allowed_methods(methods);
             }
         }
     } else {
-        layer = layer.allow_methods(tower_http::cors::Any);
+        cors = cors.allow_any_method();
     }
 
     // Allowed headers
     if let Ok(headers) = std::env::var("CORS_ALLOWED_HEADERS") {
         let s = headers.trim();
         if s == "*" {
-            layer = layer.allow_headers(tower_http::cors::Any);
+            cors = cors.allow_any_header();
         } else {
-            let mut vals = Vec::new();
+            let mut header_list = Vec::new();
             for part in s.split(',') {
                 let p = part.trim();
-                if p.is_empty() {
-                    continue;
-                }
-                if let Ok(h) = http::header::HeaderName::try_from(p) {
-                    vals.push(h);
+                if !p.is_empty() {
+                    header_list.push(p);
                 }
             }
-            if !vals.is_empty() {
-                layer = layer.allow_headers(tower_http::cors::AllowHeaders::list(vals));
-            } else {
-                layer = layer.allow_headers(tower_http::cors::Any);
+            if !header_list.is_empty() {
+                for h in header_list {
+                    cors = cors.allowed_header(h);
+                }
             }
         }
     } else {
-        layer = layer.allow_headers(tower_http::cors::Any);
+        cors = cors.allow_any_header();
     }
 
     // Credentials
     if let Ok(val) = std::env::var("CORS_ALLOW_CREDENTIALS") {
         let v = val.trim().to_ascii_lowercase();
         if v == "1" || v == "true" || v == "yes" || v == "on" {
-            layer = layer.allow_credentials(true);
+            cors = cors.supports_credentials();
         }
     }
 
     // Max age
     if let Ok(secs) = std::env::var("CORS_MAX_AGE") {
-        if let Ok(n) = secs.trim().parse::<u64>() {
-            layer = layer.max_age(Duration::from_secs(n));
+        if let Ok(n) = secs.trim().parse::<usize>() {
+            cors = cors.max_age(n);
         }
     }
 
-    layer
+    cors
 }

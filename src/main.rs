@@ -1,15 +1,16 @@
+use actix_web::{web, App, HttpServer};
 use chat2response::auth::ApiKeyManager;
 use chat2response::mcp_client::McpClientManager;
 use chat2response::mcp_config::McpConfig;
-use chat2response::server::build_router_with_state;
-use chat2response::util::{build_http_client_from_env, env_bind_addr, init_tracing, AppState};
+use chat2response::server::config_routes;
+use chat2response::util::{
+    build_http_client_from_env, cors_config_from_env, env_bind_addr, init_tracing, AppState,
+};
 use std::env;
-use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::net::TcpListener;
 
-#[tokio::main]
-async fn main() {
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
     init_tracing();
 
     // Parse command line arguments
@@ -134,6 +135,7 @@ async fn main() {
         mcp_config_path,
         system_prompt_config_path,
     };
+
     // Startup mode announcement (managed vs passthrough)
     let managed_mode = std::env::var("OPENAI_API_KEY")
         .ok()
@@ -145,21 +147,20 @@ async fn main() {
         tracing::info!("Auth mode: passthrough (client bearer tokens forwarded upstream)");
     }
 
-    let addr: SocketAddr = env_bind_addr()
-        .parse()
-        .expect("Invalid BIND_ADDR (expected host:port)");
-    let app = build_router_with_state(app_state);
-    let listener = TcpListener::bind(addr)
-        .await
-        .expect("failed to bind TCP listener");
-    tracing::info!(
-        "Chat2Response listening on http://{}",
-        listener
-            .local_addr()
-            .map(|a| a.to_string())
-            .unwrap_or_else(|_| env_bind_addr())
-    );
-    if let Err(e) = axum::serve(listener, app).await {
-        eprintln!("server error: {e:#}");
-    }
+    let addr = env_bind_addr();
+    tracing::info!("Chat2Response listening on http://{}", addr);
+
+    let app_state_data = web::Data::new(app_state);
+
+    HttpServer::new(move || {
+        let cors = cors_config_from_env();
+
+        App::new()
+            .wrap(cors)
+            .app_data(app_state_data.clone())
+            .configure(config_routes)
+    })
+    .bind(&addr)?
+    .run()
+    .await
 }

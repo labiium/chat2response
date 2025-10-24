@@ -1,20 +1,11 @@
-use axum::http::{header, HeaderMap};
-use axum::{
-    extract::Query,
-    response::IntoResponse,
-    routing::{get, post},
-    Json, Router,
-};
-use axum::{extract::State, response::Response};
+use actix_web::http::header;
+use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use serde::Deserialize;
-use std::sync::Arc;
 
 use crate::models::chat::ChatCompletionRequest;
 use crate::util::AppState;
 
-use crate::util::{
-    cors_layer_from_env, error_response, openai_base_url, sse_proxy_stream_with_bearer,
-};
+use crate::util::{error_response, openai_base_url, sse_proxy_stream_with_bearer};
 
 /// Query parameters for conversion/proxy endpoints.
 #[derive(Debug, Deserialize)]
@@ -27,10 +18,12 @@ pub struct ConvertQuery {
 /// Accepts native Responses payload and forwards upstream without transformation.
 /// Supports SSE when `stream: true`.
 async fn responses_passthrough(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(mut body): Json<serde_json::Value>,
-) -> Response {
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    body: web::Json<serde_json::Value>,
+) -> impl Responder {
+    let mut body = body.into_inner();
+
     // Apply system prompt injection if configured
     let system_prompt_guard = state.system_prompt_config.read().await;
     let model = body.get("model").and_then(|v| v.as_str());
@@ -66,6 +59,7 @@ async fn responses_passthrough(
         }
     }
     drop(system_prompt_guard);
+
     let base = openai_base_url();
     let url = format!("{}/responses", base);
 
@@ -76,7 +70,8 @@ async fn responses_passthrough(
     let managed_mode = env_api_key.is_some();
 
     // Extract client bearer
-    let client_bearer = headers
+    let client_bearer = req
+        .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| {
@@ -94,17 +89,17 @@ async fn responses_passthrough(
             match client_bearer.as_deref().map(|tok| manager.verify(tok)) {
                 Some(crate::auth::Verification::Valid { .. }) => env_api_key.clone(),
                 Some(crate::auth::Verification::Revoked { .. }) => {
-                    return error_response(axum::http::StatusCode::UNAUTHORIZED, "API key revoked");
+                    return error_response(http::StatusCode::UNAUTHORIZED, "API key revoked");
                 }
                 Some(crate::auth::Verification::Expired { .. }) => {
-                    return error_response(axum::http::StatusCode::UNAUTHORIZED, "API key expired");
+                    return error_response(http::StatusCode::UNAUTHORIZED, "API key expired");
                 }
                 Some(_) => {
-                    return error_response(axum::http::StatusCode::UNAUTHORIZED, "Invalid API key");
+                    return error_response(http::StatusCode::UNAUTHORIZED, "Invalid API key");
                 }
                 None => {
                     return error_response(
-                        axum::http::StatusCode::UNAUTHORIZED,
+                        http::StatusCode::UNAUTHORIZED,
                         "Missing Authorization bearer",
                     );
                 }
@@ -115,7 +110,7 @@ async fn responses_passthrough(
     } else {
         if client_bearer.is_none() {
             return error_response(
-                axum::http::StatusCode::UNAUTHORIZED,
+                http::StatusCode::UNAUTHORIZED,
                 "Missing Authorization bearer",
             );
         }
@@ -132,7 +127,7 @@ async fn responses_passthrough(
     if stream {
         match sse_proxy_stream_with_bearer(client, &url, &body, upstream_bearer.as_deref()).await {
             Ok(resp) => resp,
-            Err(e) => error_response(axum::http::StatusCode::BAD_GATEWAY, &e.to_string()),
+            Err(e) => error_response(http::StatusCode::BAD_GATEWAY, &e.to_string()),
         }
     } else {
         // Determine upstream mode and translate if necessary (vLLM/Ollama use Chat)
@@ -148,7 +143,7 @@ async fn responses_passthrough(
 
         let mut req = client
             .post(&real_url)
-            .header(header::CONTENT_TYPE, "application/json");
+            .header("content-type", "application/json");
         if let Some(b) = upstream_bearer {
             req = req.bearer_auth(b);
         }
@@ -156,42 +151,40 @@ async fn responses_passthrough(
             Ok(up) => {
                 let status = up.status();
                 let bytes = up.bytes().await.unwrap_or_default();
-                (status, bytes).into_response()
+                HttpResponse::build(actix_web::http::StatusCode::from_u16(status.as_u16()).unwrap())
+                    .body(bytes)
             }
-            Err(e) => error_response(axum::http::StatusCode::BAD_GATEWAY, &e.to_string()),
+            Err(e) => error_response(http::StatusCode::BAD_GATEWAY, &e.to_string()),
         }
     }
 }
 
-/// Build the Axum router with `/convert`, `/v1/chat/completions`, `/v1/responses` (passthrough),
-/// and legacy `/proxy` (deprecated; kept for backward compatibility).
-pub fn build_router() -> Router {
-    build_router_with_state(AppState::default())
-}
-
-/// Build the Axum router with custom AppState.
-pub fn build_router_with_state(app_state: AppState) -> Router {
-    let state = Arc::new(app_state);
-
-    let router = Router::new()
-        .route("/status", get(status))
-        .route("/convert", post(convert))
-        .route("/v1/chat/completions", post(chat_completions_passthrough))
-        .route("/v1/responses", post(responses_passthrough))
-        .route("/keys", get(list_keys))
-        .route("/keys/generate", post(generate_key))
-        .route("/keys/revoke", post(revoke_key))
-        .route("/keys/set_expiration", post(set_key_expiration))
-        .route("/reload/mcp", post(reload_mcp))
-        .route("/reload/system_prompt", post(reload_system_prompt))
-        .route("/reload/all", post(reload_all))
-        .with_state(state.clone());
-
-    router.layer(cors_layer_from_env())
+/// Configure Actix-web routes with AppState.
+pub fn config_routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(
+        web::scope("")
+            .route("/status", web::get().to(status))
+            .route("/convert", web::post().to(convert))
+            .route(
+                "/v1/chat/completions",
+                web::post().to(chat_completions_passthrough),
+            )
+            .route("/v1/responses", web::post().to(responses_passthrough))
+            .route("/keys", web::get().to(list_keys))
+            .route("/keys/generate", web::post().to(generate_key))
+            .route("/keys/revoke", web::post().to(revoke_key))
+            .route("/keys/set_expiration", web::post().to(set_key_expiration))
+            .route("/reload/mcp", web::post().to(reload_mcp))
+            .route(
+                "/reload/system_prompt",
+                web::post().to(reload_system_prompt),
+            )
+            .route("/reload/all", web::post().to(reload_all)),
+    );
 }
 
 /// Service status endpoint to expose feature flags and available routes.
-async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn status(state: web::Data<AppState>) -> impl Responder {
     let proxy_enabled: bool = true;
     let routes = vec![
         "/status",
@@ -216,7 +209,7 @@ async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let system_prompt_enabled = system_prompt_guard.enabled;
     drop(system_prompt_guard);
 
-    Json(serde_json::json!({
+    web::Json(serde_json::json!({
         "name": "chat2response",
         "version": env!("CARGO_PKG_VERSION"),
         "proxy_enabled": proxy_enabled,
@@ -238,10 +231,10 @@ async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
 /// Convert a Chat Completions request into a Responses API request payload (JSON).
 async fn convert(
-    State(state): State<Arc<AppState>>,
-    Query(q): Query<ConvertQuery>,
-    Json(req): Json<ChatCompletionRequest>,
-) -> impl IntoResponse {
+    state: web::Data<AppState>,
+    query: web::Query<ConvertQuery>,
+    body: web::Json<ChatCompletionRequest>,
+) -> impl Responder {
     let mcp_manager_guard = if let Some(mgr) = state.mcp_manager.as_ref() {
         Some(mgr.read().await)
     } else {
@@ -251,30 +244,24 @@ async fn convert(
     let system_prompt_guard = state.system_prompt_config.read().await;
 
     let converted = crate::conversion::to_responses_request_with_mcp_and_prompt(
-        &req,
-        q.conversation_id,
+        &body,
+        query.conversation_id.clone(),
         mcp_manager_guard.as_deref(),
         Some(&*system_prompt_guard),
     )
     .await;
 
-    Json(converted)
+    web::Json(converted)
 }
 
-/// Proxy the converted request to OpenAI's Responses endpoint and return native output.
-/// - Non-streaming: JSON roundtrip
-/// - Streaming: SSE passthrough
-
-// API key management endpoints
-///
 /// Direct passthrough for native Chat Completions requests (no translation).
-/// Accepts the standard OpenAI Chat Completions JSON and forwards it upstream
-/// to {OPENAI_BASE_URL}/chat/completions. Streaming is supported if `stream:true`.
 async fn chat_completions_passthrough(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(mut body): Json<serde_json::Value>,
-) -> Response {
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    body: web::Json<serde_json::Value>,
+) -> impl Responder {
+    let mut body = body.into_inner();
+
     // Apply system prompt injection if configured
     let system_prompt_guard = state.system_prompt_config.read().await;
     let model = body.get("model").and_then(|v| v.as_str());
@@ -293,6 +280,7 @@ async fn chat_completions_passthrough(
         }
     }
     drop(system_prompt_guard);
+
     let base = openai_base_url();
     let url = format!("{}/chat/completions", base);
 
@@ -303,7 +291,8 @@ async fn chat_completions_passthrough(
     let managed_mode = env_api_key.is_some();
 
     // Extract client bearer (could be internal access token or upstream key)
-    let client_bearer = headers
+    let client_bearer = req
+        .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| {
@@ -321,17 +310,17 @@ async fn chat_completions_passthrough(
             match client_bearer.as_deref().map(|tok| manager.verify(tok)) {
                 Some(crate::auth::Verification::Valid { .. }) => env_api_key.clone(),
                 Some(crate::auth::Verification::Revoked { .. }) => {
-                    return error_response(axum::http::StatusCode::UNAUTHORIZED, "API key revoked");
+                    return error_response(http::StatusCode::UNAUTHORIZED, "API key revoked");
                 }
                 Some(crate::auth::Verification::Expired { .. }) => {
-                    return error_response(axum::http::StatusCode::UNAUTHORIZED, "API key expired");
+                    return error_response(http::StatusCode::UNAUTHORIZED, "API key expired");
                 }
                 Some(_) => {
-                    return error_response(axum::http::StatusCode::UNAUTHORIZED, "Invalid API key");
+                    return error_response(http::StatusCode::UNAUTHORIZED, "Invalid API key");
                 }
                 None => {
                     return error_response(
-                        axum::http::StatusCode::UNAUTHORIZED,
+                        http::StatusCode::UNAUTHORIZED,
                         "Missing Authorization bearer",
                     );
                 }
@@ -343,7 +332,7 @@ async fn chat_completions_passthrough(
     } else {
         if client_bearer.is_none() {
             return error_response(
-                axum::http::StatusCode::UNAUTHORIZED,
+                http::StatusCode::UNAUTHORIZED,
                 "Missing Authorization bearer",
             );
         }
@@ -361,12 +350,10 @@ async fn chat_completions_passthrough(
     if stream {
         match sse_proxy_stream_with_bearer(client, &url, &body, upstream_bearer.as_deref()).await {
             Ok(resp) => resp,
-            Err(e) => error_response(axum::http::StatusCode::BAD_GATEWAY, &e.to_string()),
+            Err(e) => error_response(http::StatusCode::BAD_GATEWAY, &e.to_string()),
         }
     } else {
-        let mut req = client
-            .post(&url)
-            .header(header::CONTENT_TYPE, "application/json");
+        let mut req = client.post(&url).header("content-type", "application/json");
         if let Some(b) = upstream_bearer {
             req = req.bearer_auth(b);
         }
@@ -374,9 +361,10 @@ async fn chat_completions_passthrough(
             Ok(up) => {
                 let status = up.status();
                 let bytes = up.bytes().await.unwrap_or_default();
-                (status, bytes).into_response()
+                HttpResponse::build(actix_web::http::StatusCode::from_u16(status.as_u16()).unwrap())
+                    .body(bytes)
             }
-            Err(e) => error_response(axum::http::StatusCode::BAD_GATEWAY, &e.to_string()),
+            Err(e) => error_response(http::StatusCode::BAD_GATEWAY, &e.to_string()),
         }
     }
 }
@@ -390,9 +378,11 @@ struct GenerateKeyRequest {
 }
 
 async fn generate_key(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<GenerateKeyRequest>,
-) -> axum::response::Response {
+    state: web::Data<AppState>,
+    body: web::Json<GenerateKeyRequest>,
+) -> impl Responder {
+    let payload = body.into_inner();
+
     // Env flag to require expiration at creation
     let require_exp = std::env::var("CHAT2RESPONSE_KEYS_REQUIRE_EXPIRATION")
         .map(|v| {
@@ -416,7 +406,7 @@ async fn generate_key(
     let ttl_seconds = if let Some(exp) = payload.expires_at {
         if exp <= now {
             return error_response(
-                axum::http::StatusCode::BAD_REQUEST,
+                http::StatusCode::BAD_REQUEST,
                 "expires_at must be in the future",
             );
         }
@@ -430,7 +420,7 @@ async fn generate_key(
     // If required, enforce at least some ttl
     if require_exp && ttl_seconds.is_none() {
         return error_response(
-            axum::http::StatusCode::BAD_REQUEST,
+            http::StatusCode::BAD_REQUEST,
             "Expiration required: provide expires_at or ttl_seconds (or configure default TTL)",
         );
     }
@@ -441,30 +431,30 @@ async fn generate_key(
             ttl_seconds.map(std::time::Duration::from_secs),
             payload.scopes,
         ) {
-            Ok(gen) => Json(gen).into_response(),
+            Ok(gen) => HttpResponse::Ok().json(gen),
             Err(e) => error_response(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                http::StatusCode::INTERNAL_SERVER_ERROR,
                 &format!("failed to generate key: {}", e),
             ),
         },
         None => error_response(
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            http::StatusCode::SERVICE_UNAVAILABLE,
             "API key manager unavailable",
         ),
     }
 }
 
-async fn list_keys(State(state): State<Arc<AppState>>) -> axum::response::Response {
+async fn list_keys(state: web::Data<AppState>) -> impl Responder {
     match &state.api_keys {
         Some(mgr) => match mgr.list_keys() {
-            Ok(items) => Json(items).into_response(),
+            Ok(items) => HttpResponse::Ok().json(items),
             Err(e) => error_response(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                http::StatusCode::INTERNAL_SERVER_ERROR,
                 &format!("failed to list keys: {}", e),
             ),
         },
         None => error_response(
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            http::StatusCode::SERVICE_UNAVAILABLE,
             "API key manager unavailable",
         ),
     }
@@ -476,24 +466,26 @@ struct RevokeKeyRequest {
 }
 
 async fn revoke_key(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<RevokeKeyRequest>,
-) -> axum::response::Response {
+    state: web::Data<AppState>,
+    body: web::Json<RevokeKeyRequest>,
+) -> impl Responder {
+    let payload = body.into_inner();
+
     match &state.api_keys {
-        Some(mgr) => match mgr.revoke(&payload.id) {
-            Ok(true) => {
-                Json(serde_json::json!({ "revoked": true, "id": payload.id })).into_response()
+        Some(mgr) => {
+            match mgr.revoke(&payload.id) {
+                Ok(true) => HttpResponse::Ok()
+                    .json(serde_json::json!({ "revoked": true, "id": payload.id })),
+                Ok(false) => HttpResponse::Ok()
+                    .json(serde_json::json!({ "revoked": false, "id": payload.id })),
+                Err(e) => error_response(
+                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("failed to revoke: {}", e),
+                ),
             }
-            Ok(false) => {
-                Json(serde_json::json!({ "revoked": false, "id": payload.id })).into_response()
-            }
-            Err(e) => error_response(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("failed to revoke: {}", e),
-            ),
-        },
+        }
         None => error_response(
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            http::StatusCode::SERVICE_UNAVAILABLE,
             "API key manager unavailable",
         ),
     }
@@ -507,9 +499,11 @@ struct SetExpirationRequest {
 }
 
 async fn set_key_expiration(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<SetExpirationRequest>,
-) -> axum::response::Response {
+    state: web::Data<AppState>,
+    body: web::Json<SetExpirationRequest>,
+) -> impl Responder {
+    let payload = body.into_inner();
+
     let new_exp = if let Some(at) = payload.expires_at {
         Some(at)
     } else if let Some(ttl) = payload.ttl_seconds {
@@ -521,34 +515,34 @@ async fn set_key_expiration(
     } else {
         None
     };
+
     match &state.api_keys {
         Some(mgr) => match mgr.set_expiration(&payload.id, new_exp) {
-            Ok(true) => Json(
+            Ok(true) => HttpResponse::Ok().json(
                 serde_json::json!({ "updated": true, "id": payload.id, "expires_at": new_exp }),
-            )
-            .into_response(),
+            ),
             Ok(false) => {
-                Json(serde_json::json!({ "updated": false, "id": payload.id })).into_response()
+                HttpResponse::Ok().json(serde_json::json!({ "updated": false, "id": payload.id }))
             }
             Err(e) => error_response(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                http::StatusCode::INTERNAL_SERVER_ERROR,
                 &format!("failed to set expiration: {}", e),
             ),
         },
         None => error_response(
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            http::StatusCode::SERVICE_UNAVAILABLE,
             "API key manager unavailable",
         ),
     }
 }
 
 /// Reload MCP configuration from file at runtime
-async fn reload_mcp(State(state): State<Arc<AppState>>) -> axum::response::Response {
+async fn reload_mcp(state: web::Data<AppState>) -> impl Responder {
     let config_path = match &state.mcp_config_path {
         Some(path) => path.clone(),
         None => {
             return error_response(
-                axum::http::StatusCode::BAD_REQUEST,
+                http::StatusCode::BAD_REQUEST,
                 "No MCP config path configured - cannot reload",
             );
         }
@@ -562,7 +556,7 @@ async fn reload_mcp(State(state): State<Arc<AppState>>) -> axum::response::Respo
         Err(e) => {
             tracing::error!("Failed to load MCP config: {}", e);
             return error_response(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                http::StatusCode::INTERNAL_SERVER_ERROR,
                 &format!("Failed to load MCP config: {}", e),
             );
         }
@@ -574,7 +568,7 @@ async fn reload_mcp(State(state): State<Arc<AppState>>) -> axum::response::Respo
         Err(e) => {
             tracing::error!("Failed to initialize MCP client manager: {}", e);
             return error_response(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                http::StatusCode::INTERNAL_SERVER_ERROR,
                 &format!("Failed to initialize MCP manager: {}", e),
             );
         }
@@ -593,28 +587,27 @@ async fn reload_mcp(State(state): State<Arc<AppState>>) -> axum::response::Respo
             server_count
         );
 
-        Json(serde_json::json!({
+        HttpResponse::Ok().json(serde_json::json!({
             "success": true,
             "message": "MCP configuration reloaded",
             "servers": connected_servers,
             "count": server_count
         }))
-        .into_response()
     } else {
         error_response(
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            http::StatusCode::SERVICE_UNAVAILABLE,
             "MCP manager not initialized",
         )
     }
 }
 
 /// Reload system prompt configuration from file at runtime
-async fn reload_system_prompt(State(state): State<Arc<AppState>>) -> axum::response::Response {
+async fn reload_system_prompt(state: web::Data<AppState>) -> impl Responder {
     let config_path = match &state.system_prompt_config_path {
         Some(path) => path.clone(),
         None => {
             return error_response(
-                axum::http::StatusCode::BAD_REQUEST,
+                http::StatusCode::BAD_REQUEST,
                 "No system prompt config path configured - cannot reload",
             );
         }
@@ -632,7 +625,7 @@ async fn reload_system_prompt(State(state): State<Arc<AppState>>) -> axum::respo
         Err(e) => {
             tracing::error!("Failed to load system prompt config: {}", e);
             return error_response(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                http::StatusCode::INTERNAL_SERVER_ERROR,
                 &format!("Failed to load system prompt config: {}", e),
             );
         }
@@ -644,7 +637,7 @@ async fn reload_system_prompt(State(state): State<Arc<AppState>>) -> axum::respo
 
     tracing::info!("System prompt configuration reloaded successfully");
 
-    Json(serde_json::json!({
+    HttpResponse::Ok().json(serde_json::json!({
         "success": true,
         "message": "System prompt configuration reloaded",
         "enabled": config.enabled,
@@ -653,11 +646,10 @@ async fn reload_system_prompt(State(state): State<Arc<AppState>>) -> axum::respo
         "per_api_count": config.per_api.len(),
         "injection_mode": config.injection_mode
     }))
-    .into_response()
 }
 
 /// Reload both MCP and system prompt configurations
-async fn reload_all(State(state): State<Arc<AppState>>) -> axum::response::Response {
+async fn reload_all(state: web::Data<AppState>) -> impl Responder {
     let mut results = serde_json::json!({
         "mcp": { "success": false, "message": "Not attempted" },
         "system_prompt": { "success": false, "message": "Not attempted" }
@@ -754,5 +746,5 @@ async fn reload_all(State(state): State<Arc<AppState>>) -> axum::response::Respo
         });
     }
 
-    Json(results).into_response()
+    HttpResponse::Ok().json(results)
 }

@@ -1,29 +1,29 @@
-use axum::http::StatusCode;
-use chat2response::server::build_router_with_state;
+use actix_web::{test, web, App};
+use chat2response::server::config_routes;
 use chat2response::util::AppState;
 use serde_json::json;
 use std::sync::Arc;
-use tower::ServiceExt;
 
-#[tokio::test]
+#[actix_web::test]
 async fn test_reload_mcp_without_path() {
     let app_state = AppState::default();
-    let app = build_router_with_state(app_state);
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(app_state))
+            .configure(config_routes),
+    )
+    .await;
 
-    let request = axum::http::Request::builder()
-        .method("POST")
+    let req = test::TestRequest::post()
         .uri("/reload/mcp")
-        .header("content-type", "application/json")
-        .body(axum::body::Body::empty())
-        .unwrap();
+        .insert_header(("content-type", "application/json"))
+        .to_request();
 
-    let response = app.oneshot(request).await.unwrap();
+    let resp = test::call_service(&app, req).await;
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), 400);
 
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
+    let body = test::read_body(resp).await;
     let body_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert!(body_json["error"]["message"]
@@ -32,25 +32,26 @@ async fn test_reload_mcp_without_path() {
         .contains("No MCP config path"));
 }
 
-#[tokio::test]
+#[actix_web::test]
 async fn test_reload_system_prompt_without_path() {
     let app_state = AppState::default();
-    let app = build_router_with_state(app_state);
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(app_state))
+            .configure(config_routes),
+    )
+    .await;
 
-    let request = axum::http::Request::builder()
-        .method("POST")
+    let req = test::TestRequest::post()
         .uri("/reload/system_prompt")
-        .header("content-type", "application/json")
-        .body(axum::body::Body::empty())
-        .unwrap();
+        .insert_header(("content-type", "application/json"))
+        .to_request();
 
-    let response = app.oneshot(request).await.unwrap();
+    let resp = test::call_service(&app, req).await;
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), 400);
 
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
+    let body = test::read_body(resp).await;
     let body_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert!(body_json["error"]["message"]
@@ -59,32 +60,33 @@ async fn test_reload_system_prompt_without_path() {
         .contains("No system prompt config path"));
 }
 
-#[tokio::test]
+#[actix_web::test]
 async fn test_reload_all_without_paths() {
     let app_state = AppState::default();
-    let app = build_router_with_state(app_state);
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(app_state))
+            .configure(config_routes),
+    )
+    .await;
 
-    let request = axum::http::Request::builder()
-        .method("POST")
+    let req = test::TestRequest::post()
         .uri("/reload/all")
-        .header("content-type", "application/json")
-        .body(axum::body::Body::empty())
-        .unwrap();
+        .insert_header(("content-type", "application/json"))
+        .to_request();
 
-    let response = app.oneshot(request).await.unwrap();
+    let resp = test::call_service(&app, req).await;
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(resp.status(), 200);
 
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
+    let body = test::read_body(resp).await;
     let body_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(body_json["mcp"]["success"], false);
     assert_eq!(body_json["system_prompt"]["success"], false);
 }
 
-#[tokio::test]
+#[actix_web::test]
 async fn test_reload_system_prompt_with_valid_config() {
     // Create a temporary config file
     let temp_dir = tempfile::tempdir().unwrap();
@@ -101,22 +103,23 @@ async fn test_reload_system_prompt_with_valid_config() {
     let mut app_state = AppState::default();
     app_state.system_prompt_config_path = Some(config_path.to_string_lossy().to_string());
 
-    let app = build_router_with_state(app_state);
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(app_state))
+            .configure(config_routes),
+    )
+    .await;
 
-    let request = axum::http::Request::builder()
-        .method("POST")
+    let req = test::TestRequest::post()
         .uri("/reload/system_prompt")
-        .header("content-type", "application/json")
-        .body(axum::body::Body::empty())
-        .unwrap();
+        .insert_header(("content-type", "application/json"))
+        .to_request();
 
-    let response = app.oneshot(request).await.unwrap();
+    let resp = test::call_service(&app, req).await;
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(resp.status(), 200);
 
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
+    let body = test::read_body(resp).await;
     let body_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(body_json["success"], true);
@@ -125,7 +128,7 @@ async fn test_reload_system_prompt_with_valid_config() {
     assert_eq!(body_json["injection_mode"], "prepend");
 }
 
-#[tokio::test]
+#[actix_web::test]
 async fn test_reload_system_prompt_with_invalid_config() {
     // Create a temporary invalid config file
     let temp_dir = tempfile::tempdir().unwrap();
@@ -136,21 +139,24 @@ async fn test_reload_system_prompt_with_invalid_config() {
     let mut app_state = AppState::default();
     app_state.system_prompt_config_path = Some(config_path.to_string_lossy().to_string());
 
-    let app = build_router_with_state(app_state);
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(app_state))
+            .configure(config_routes),
+    )
+    .await;
 
-    let request = axum::http::Request::builder()
-        .method("POST")
+    let req = test::TestRequest::post()
         .uri("/reload/system_prompt")
-        .header("content-type", "application/json")
-        .body(axum::body::Body::empty())
-        .unwrap();
+        .insert_header(("content-type", "application/json"))
+        .to_request();
 
-    let response = app.oneshot(request).await.unwrap();
+    let resp = test::call_service(&app, req).await;
 
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(resp.status(), 500);
 }
 
-#[tokio::test]
+#[actix_web::test]
 async fn test_convert_with_system_prompt() {
     // Create a temporary config file
     let temp_dir = tempfile::tempdir().unwrap();
@@ -173,7 +179,12 @@ async fn test_convert_with_system_prompt() {
             .unwrap();
     app_state.system_prompt_config = Arc::new(tokio::sync::RwLock::new(loaded_config));
 
-    let app = build_router_with_state(app_state);
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(app_state))
+            .configure(config_routes),
+    )
+    .await;
 
     let chat_request = json!({
         "model": "gpt-4",
@@ -182,22 +193,17 @@ async fn test_convert_with_system_prompt() {
         ]
     });
 
-    let request = axum::http::Request::builder()
-        .method("POST")
+    let req = test::TestRequest::post()
         .uri("/convert")
-        .header("content-type", "application/json")
-        .body(axum::body::Body::from(
-            serde_json::to_string(&chat_request).unwrap(),
-        ))
-        .unwrap();
+        .insert_header(("content-type", "application/json"))
+        .set_payload(serde_json::to_string(&chat_request).unwrap())
+        .to_request();
 
-    let response = app.oneshot(request).await.unwrap();
+    let resp = test::call_service(&app, req).await;
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(resp.status(), 200);
 
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
+    let body = test::read_body(resp).await;
     let body_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     // Check that system prompt was injected
@@ -209,24 +215,23 @@ async fn test_convert_with_system_prompt() {
     assert_eq!(messages[1]["content"], "Hello");
 }
 
-#[tokio::test]
+#[actix_web::test]
 async fn test_status_endpoint_includes_new_routes() {
     let app_state = AppState::default();
-    let app = build_router_with_state(app_state);
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(app_state))
+            .configure(config_routes),
+    )
+    .await;
 
-    let request = axum::http::Request::builder()
-        .method("GET")
-        .uri("/status")
-        .body(axum::body::Body::empty())
-        .unwrap();
+    let req = test::TestRequest::get().uri("/status").to_request();
 
-    let response = app.oneshot(request).await.unwrap();
+    let resp = test::call_service(&app, req).await;
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(resp.status(), 200);
 
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
+    let body = test::read_body(resp).await;
     let body_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     let routes = body_json["routes"].as_array().unwrap();
