@@ -18,20 +18,28 @@ Modules
 Note: Keep the mapping rules aligned with OpenAI docs; the Responses API evolves over time.
 "#]
 
+pub mod analytics;
+pub mod analytics_middleware;
 pub mod auth;
 
 pub mod conversion;
 pub mod mcp_client;
 pub mod mcp_config;
 pub mod models;
+pub mod pricing;
 pub mod server;
 pub mod system_prompt_config;
 pub mod util;
 
 // Re-export the primary conversion function for ergonomic library use.
+pub use crate::analytics::{AnalyticsEvent, AnalyticsManager, CostInfo, TokenUsage};
 pub use crate::auth::{ApiKeyInfo, ApiKeyManager, GeneratedKey, Verification};
+pub use crate::pricing::{ModelPricing, PricingConfig};
 
-pub use crate::conversion::to_responses_request;
+pub use crate::conversion::{
+    chat_to_responses_response, responses_chunk_to_chat_chunk, responses_to_chat_response,
+    to_responses_request,
+};
 
 // Re-export model namespaces for convenience (downstream users can do `use chat2response::chat`).
 pub use crate::models::{chat, responses};

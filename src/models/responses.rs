@@ -185,3 +185,101 @@ impl Serialize for ResponsesRequest {
         Value::Object(root).serialize(serializer)
     }
 }
+
+// ============================================================================
+// Responses API Response Models
+// ============================================================================
+
+/// Output item types in Responses API
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OutputItem {
+    #[serde(rename = "assistant_message")]
+    AssistantMessage { id: String, content: String },
+    Reasoning {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_content: Option<String>,
+    },
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: String,
+        call_id: String,
+    },
+    #[serde(rename = "function_call_output")]
+    FunctionCallOutput {
+        id: String,
+        call_id: String,
+        content: String,
+    },
+}
+
+/// Usage statistics in Responses API response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[skip_serializing_none]
+pub struct ResponsesUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+
+    /// Reasoning tokens for reasoning-capable models (o1, o3, GPT-5)
+    #[serde(default)]
+    pub reasoning_tokens: Option<u64>,
+
+    /// Cached tokens (subset of input_tokens)
+    #[serde(default)]
+    pub cached_tokens: Option<u64>,
+}
+
+/// Complete Responses API response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[skip_serializing_none]
+pub struct ResponsesResponse {
+    pub id: String,
+    pub object: String, // "response"
+    pub created: u64,
+    pub model: String,
+
+    /// Primary text output (convenience field)
+    #[serde(default)]
+    pub output_text: Option<String>,
+
+    /// Array of output items (reasoning, messages, tool calls, etc.)
+    pub output: Vec<OutputItem>,
+
+    /// Token usage statistics
+    #[serde(default)]
+    pub usage: Option<ResponsesUsage>,
+
+    #[serde(default)]
+    pub system_fingerprint: Option<String>,
+}
+
+// ============================================================================
+// Responses API Streaming Response Models
+// ============================================================================
+
+/// Streaming chunk from Responses API
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[skip_serializing_none]
+pub struct ResponsesChunk {
+    pub id: String,
+    pub object: String, // "response.chunk"
+    pub created: u64,
+    pub model: String,
+
+    /// Incremental text delta
+    #[serde(default)]
+    pub output_text_delta: Option<String>,
+
+    /// Incremental output item deltas
+    #[serde(default)]
+    pub output_deltas: Option<Vec<OutputItem>>,
+
+    /// Final usage (only in last chunk)
+    #[serde(default)]
+    pub usage: Option<ResponsesUsage>,
+}

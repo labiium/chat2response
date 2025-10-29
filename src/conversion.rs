@@ -2,6 +2,191 @@ use crate::models::chat;
 use crate::models::responses as resp;
 use serde_json::{Map, Value};
 
+// ============================================================================
+// Response Body Conversion Functions
+// ============================================================================
+
+/// Convert a Responses API response to a Chat Completions response.
+///
+/// This conversion maps:
+/// - output_text → choices[0].message.content
+/// - usage.input_tokens → usage.prompt_tokens
+/// - usage.output_tokens → usage.completion_tokens
+/// - usage.reasoning_tokens → usage.reasoning_tokens (preserved)
+/// - output array items → appropriate Chat format
+pub fn responses_to_chat_response(
+    responses_response: &resp::ResponsesResponse,
+) -> chat::ChatCompletionResponse {
+    // Extract primary message content
+    let content = responses_response.output_text.clone();
+
+    // Check if there are tool calls in the output
+    let mut tool_calls: Vec<chat::ToolCall> = Vec::new();
+    let mut finish_reason = "stop";
+
+    for item in &responses_response.output {
+        match item {
+            resp::OutputItem::ToolCall {
+                id: _,
+                name,
+                arguments,
+                call_id,
+            } => {
+                tool_calls.push(chat::ToolCall {
+                    id: call_id.clone(),
+                    call_type: "function".to_string(),
+                    function: chat::FunctionCall {
+                        name: name.clone(),
+                        arguments: arguments.clone(),
+                    },
+                });
+                finish_reason = "tool_calls";
+            }
+            _ => {}
+        }
+    }
+
+    // Build the assistant message
+    let message = chat::ChatResponseMessage {
+        role: "assistant".to_string(),
+        content,
+        tool_calls: if tool_calls.is_empty() {
+            None
+        } else {
+            Some(tool_calls)
+        },
+        function_call: None,
+    };
+
+    // Create single choice
+    let choice = chat::ChatChoice {
+        index: 0,
+        message,
+        finish_reason: Some(finish_reason.to_string()),
+        logprobs: None,
+    };
+
+    // Convert usage
+    let usage = responses_response.usage.as_ref().map(|u| chat::ChatUsage {
+        prompt_tokens: u.input_tokens,
+        completion_tokens: u.output_tokens,
+        total_tokens: u.total_tokens,
+        reasoning_tokens: u.reasoning_tokens,
+        cached_tokens: u.cached_tokens,
+    });
+
+    chat::ChatCompletionResponse {
+        id: responses_response.id.clone(),
+        object: "chat.completion".to_string(),
+        created: responses_response.created,
+        model: responses_response.model.clone(),
+        choices: vec![choice],
+        usage,
+        system_fingerprint: responses_response.system_fingerprint.clone(),
+    }
+}
+
+/// Convert a Chat Completions response to a Responses API response.
+///
+/// This is useful for testing round-trip conversions.
+pub fn chat_to_responses_response(
+    chat_response: &chat::ChatCompletionResponse,
+) -> resp::ResponsesResponse {
+    let mut output_items: Vec<resp::OutputItem> = Vec::new();
+    let mut output_text: Option<String> = None;
+
+    // Process first choice (primary response)
+    if let Some(choice) = chat_response.choices.first() {
+        // Add assistant message if content exists
+        if let Some(ref content) = choice.message.content {
+            output_text = Some(content.clone());
+            output_items.push(resp::OutputItem::AssistantMessage {
+                id: format!("msg-{}", chat_response.id),
+                content: content.clone(),
+            });
+        }
+
+        // Add tool calls if present
+        if let Some(ref tool_calls) = choice.message.tool_calls {
+            for (idx, tool_call) in tool_calls.iter().enumerate() {
+                output_items.push(resp::OutputItem::ToolCall {
+                    id: format!("call-{}", idx),
+                    name: tool_call.function.name.clone(),
+                    arguments: tool_call.function.arguments.clone(),
+                    call_id: tool_call.id.clone(),
+                });
+            }
+        }
+    }
+
+    // Convert usage
+    let usage = chat_response.usage.as_ref().map(|u| resp::ResponsesUsage {
+        input_tokens: u.prompt_tokens,
+        output_tokens: u.completion_tokens,
+        total_tokens: u.total_tokens,
+        reasoning_tokens: u.reasoning_tokens,
+        cached_tokens: u.cached_tokens,
+    });
+
+    resp::ResponsesResponse {
+        id: chat_response.id.clone(),
+        object: "response".to_string(),
+        created: chat_response.created,
+        model: chat_response.model.clone(),
+        output_text,
+        output: output_items,
+        usage,
+        system_fingerprint: chat_response.system_fingerprint.clone(),
+    }
+}
+
+/// Convert a Responses API streaming chunk to a Chat Completions chunk.
+pub fn responses_chunk_to_chat_chunk(
+    responses_chunk: &resp::ResponsesChunk,
+    is_first: bool,
+) -> chat::ChatCompletionChunk {
+    let delta = if is_first {
+        chat::ChatDelta {
+            role: Some("assistant".to_string()),
+            content: responses_chunk.output_text_delta.clone(),
+            tool_calls: None,
+        }
+    } else {
+        chat::ChatDelta {
+            role: None,
+            content: responses_chunk.output_text_delta.clone(),
+            tool_calls: None,
+        }
+    };
+
+    let choice = chat::ChatStreamChoice {
+        index: 0,
+        delta,
+        finish_reason: None,
+    };
+
+    let usage = responses_chunk.usage.as_ref().map(|u| chat::ChatUsage {
+        prompt_tokens: u.input_tokens,
+        completion_tokens: u.output_tokens,
+        total_tokens: u.total_tokens,
+        reasoning_tokens: u.reasoning_tokens,
+        cached_tokens: u.cached_tokens,
+    });
+
+    chat::ChatCompletionChunk {
+        id: responses_chunk.id.clone(),
+        object: "chat.completion.chunk".to_string(),
+        created: responses_chunk.created,
+        model: responses_chunk.model.clone(),
+        choices: vec![choice],
+        usage,
+    }
+}
+
+// ============================================================================
+// Existing Request Conversion Functions
+// ============================================================================
+
 pub fn responses_json_to_chat_request(v: &serde_json::Value) -> chat::ChatCompletionRequest {
     let model = v
         .get("model")
@@ -140,6 +325,7 @@ pub fn responses_json_to_chat_request(v: &serde_json::Value) -> chat::ChatComple
         temperature,
         top_p,
         max_tokens,
+        max_completion_tokens: None,
         stop,
         presence_penalty,
         frequency_penalty,
@@ -235,7 +421,8 @@ pub fn to_responses_request(
         // Sampling / decoding
         temperature: src.temperature,
         top_p: src.top_p,
-        max_output_tokens: src.max_tokens,
+        // Prefer max_completion_tokens (newer parameter) over max_tokens
+        max_output_tokens: src.max_completion_tokens.or(src.max_tokens),
         stop: src.stop.clone(),
         presence_penalty: src.presence_penalty,
         frequency_penalty: src.frequency_penalty,
@@ -485,6 +672,7 @@ mod tests {
             temperature: Some(0.3),
             top_p: Some(0.95),
             max_tokens: Some(128),
+            max_completion_tokens: None,
             stop: None,
             presence_penalty: Some(0.0),
             frequency_penalty: Some(0.0),
@@ -528,6 +716,7 @@ mod tests {
             temperature: None,
             top_p: None,
             max_tokens: None,
+            max_completion_tokens: None,
             stop: None,
             presence_penalty: None,
             frequency_penalty: None,
@@ -584,6 +773,7 @@ mod tests {
             temperature: None,
             top_p: None,
             max_tokens: None,
+            max_completion_tokens: None,
             stop: None,
             presence_penalty: None,
             frequency_penalty: None,

@@ -145,6 +145,10 @@ pub struct AppState {
     /// System prompt configuration with runtime reload support
     pub system_prompt_config:
         std::sync::Arc<tokio::sync::RwLock<crate::system_prompt_config::SystemPromptConfig>>,
+    /// Analytics manager for tracking request metrics
+    pub analytics: Option<std::sync::Arc<crate::analytics::AnalyticsManager>>,
+    /// Pricing configuration for cost calculation
+    pub pricing: std::sync::Arc<crate::pricing::PricingConfig>,
     /// Path to MCP config file for reload operations
     pub mcp_config_path: Option<String>,
     /// Path to system prompt config file for reload operations
@@ -234,6 +238,10 @@ impl Default for AppState {
             system_prompt_config: std::sync::Arc::new(tokio::sync::RwLock::new(
                 crate::system_prompt_config::SystemPromptConfig::empty(),
             )),
+            analytics: crate::analytics::AnalyticsManager::from_env()
+                .ok()
+                .map(std::sync::Arc::new),
+            pricing: std::sync::Arc::new(crate::pricing::PricingConfig::default()),
             mcp_config_path: None,
             system_prompt_config_path: None,
         }
@@ -262,6 +270,10 @@ impl AppState {
             system_prompt_config: std::sync::Arc::new(tokio::sync::RwLock::new(
                 crate::system_prompt_config::SystemPromptConfig::empty(),
             )),
+            analytics: crate::analytics::AnalyticsManager::from_env()
+                .ok()
+                .map(std::sync::Arc::new),
+            pricing: std::sync::Arc::new(crate::pricing::PricingConfig::default()),
             mcp_config_path: None,
             system_prompt_config_path: None,
         }
@@ -290,6 +302,10 @@ impl AppState {
             system_prompt_config: std::sync::Arc::new(tokio::sync::RwLock::new(
                 crate::system_prompt_config::SystemPromptConfig::empty(),
             )),
+            analytics: crate::analytics::AnalyticsManager::from_env()
+                .ok()
+                .map(std::sync::Arc::new),
+            pricing: std::sync::Arc::new(crate::pricing::PricingConfig::default()),
             mcp_config_path: None,
             system_prompt_config_path: None,
         }
@@ -368,6 +384,222 @@ pub async fn sse_proxy_stream(
         if !k.is_empty() {
             rb = rb.bearer_auth(k);
         }
+    }
+    let resp = rb.send().await?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let bytes = resp.bytes().await.unwrap_or_default();
+        return Ok(HttpResponse::build(
+            actix_web::http::StatusCode::from_u16(status.as_u16()).unwrap(),
+        )
+        .body(bytes));
+    }
+
+    // Stream SSE passthrough without buffering the entire response.
+    let upstream_ct = resp.headers().get(header::CONTENT_TYPE).cloned();
+    let stream = resp
+        .bytes_stream()
+        .map_err(|e| std::io::Error::other(e.to_string()))
+        .map_ok(Bytes::from);
+
+    let mut response = HttpResponse::Ok();
+    if let Some(ct) = upstream_ct {
+        if let Ok(ct_str) = ct.to_str() {
+            response.insert_header(("content-type", ct_str));
+        } else {
+            response.insert_header(("content-type", "text/event-stream"));
+        }
+    } else {
+        response.insert_header(("content-type", "text/event-stream"));
+    }
+
+    Ok(response
+        .insert_header(("cache-control", "no-cache"))
+        .insert_header(("connection", "keep-alive"))
+        .streaming(stream))
+}
+
+/// Multi-backend routing based on model prefixes declared in CHAT2RESPONSE_BACKENDS.
+/// Format (semicolon-separated rules; commas within a rule):
+///   CHAT2RESPONSE_BACKENDS="prefix=gpt-;base=https://api.openai.com/v1;key_env=OPENAI_API_KEY;mode=responses; prefix=claude-;base=https://api.anthropic.com/v1;key_env=ANTHROPIC_API_KEY;mode=responses; prefix=llama;base=http://localhost:11434/v1;mode=chat"
+///
+/// Notes:
+/// - prefix: string matched with starts_with against the request's model
+/// - base: provider base URL (include /v1 if required by provider)
+/// - key_env (optional): env var name that holds the upstream API key for this provider
+/// - mode (optional): "responses" or "chat" (defaults to CHAT2RESPONSE_UPSTREAM_MODE or "responses")
+#[derive(Debug, Clone)]
+struct BackendRule {
+    prefix: String,
+    base_url: String,
+    key_env: Option<String>,
+    mode: Option<UpstreamMode>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedBackend {
+    base_url: String,
+    key_env: Option<String>,
+    mode: UpstreamMode,
+}
+
+fn parse_mode(s: &str) -> Option<UpstreamMode> {
+    let v = s.trim().to_ascii_lowercase();
+    match v.as_str() {
+        "chat" => Some(UpstreamMode::Chat),
+        "responses" => Some(UpstreamMode::Responses),
+        _ => None,
+    }
+}
+
+fn backends_from_env() -> Vec<BackendRule> {
+    let mut out = Vec::new();
+    let raw = match std::env::var("CHAT2RESPONSE_BACKENDS") {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    for rule_raw in raw.split(';') {
+        let r = rule_raw.trim();
+        if r.is_empty() {
+            continue;
+        }
+        // Support both "k=v,k=v" and "k=v; k=v" styles by normalizing separators to commas first.
+        let parts = r
+            .split([',', ';'])
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty());
+        let mut prefix: Option<String> = None;
+        let mut base: Option<String> = None;
+        let mut key_env: Option<String> = None;
+        let mut mode: Option<UpstreamMode> = None;
+
+        for kv in parts {
+            let mut it = kv.splitn(2, '=');
+            let k = it.next().unwrap_or("").trim().to_ascii_lowercase();
+            let v = it.next().unwrap_or("").trim().to_string();
+            if v.is_empty() {
+                continue;
+            }
+            match k.as_str() {
+                "prefix" => prefix = Some(v),
+                "base" | "base_url" => base = Some(v),
+                "key_env" | "api_key_env" => key_env = Some(v),
+                "mode" => mode = parse_mode(&v),
+                _ => {}
+            }
+        }
+
+        if let (Some(pfx), Some(bu)) = (prefix, base) {
+            out.push(BackendRule {
+                prefix: pfx,
+                base_url: bu,
+                key_env,
+                mode,
+            });
+        }
+    }
+    out
+}
+
+fn resolve_backend_for_model(model: Option<&str>) -> Option<ResolvedBackend> {
+    let model = model?;
+    let rules = backends_from_env();
+    for rule in rules {
+        if model.starts_with(rule.prefix.as_str()) {
+            let mode = rule.mode.unwrap_or_else(upstream_mode_from_env);
+            return Some(ResolvedBackend {
+                base_url: rule.base_url,
+                key_env: rule.key_env,
+                mode,
+            });
+        }
+    }
+    None
+}
+
+/// Streaming helper that auto-resolves backend based on model from payload.
+/// Honors explicit bearer argument; if absent, uses provider-specific key_env or OPENAI_API_KEY.
+/// Endpoint path is selected by provider rule.mode (or CHAT2RESPONSE_UPSTREAM_MODE).
+pub async fn sse_proxy_stream_with_bearer_routed(
+    client: &reqwest::Client,
+    payload: &serde_json::Value,
+    bearer: Option<&str>,
+) -> Result<HttpResponse, anyhow::Error> {
+    use bytes::Bytes;
+    use futures_util::TryStreamExt;
+    use http::header;
+
+    // Extract model to resolve backend
+    let model = payload.get("model").and_then(|v| v.as_str()).or({
+        // Try Responses-style input.messages[...].model is not standard; model is required.
+        None
+    });
+
+    let resolved = resolve_backend_for_model(model);
+
+    // Choose base URL and mode
+    let (base_url, mode, key_env) = if let Some(r) = resolved {
+        (r.base_url, r.mode, r.key_env)
+    } else {
+        (
+            openai_base_url(),
+            upstream_mode_from_env(),
+            Some("OPENAI_API_KEY".to_string()),
+        )
+    };
+
+    // Build endpoint according to mode
+    let endpoint = match mode {
+        UpstreamMode::Responses => "/responses",
+        UpstreamMode::Chat => "/chat/completions",
+    };
+    let real_url = format!(
+        "{}/{}",
+        base_url.trim_end_matches('/'),
+        endpoint.trim_start_matches('/')
+    );
+
+    // Translate payload if mode = Chat (vLLM/Ollama path)
+    let mut body = payload.clone();
+    if matches!(mode, UpstreamMode::Chat) {
+        let chat_req = crate::conversion::responses_json_to_chat_request(&body);
+        if let Ok(v) = serde_json::to_value(chat_req) {
+            body = v;
+        }
+    }
+
+    // Determine effective bearer: explicit > provider key_env > OPENAI_API_KEY
+    let effective_bearer = bearer
+        .and_then(|b| {
+            let t = b.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        })
+        .or_else(|| {
+            key_env
+                .as_deref()
+                .and_then(|k| std::env::var(k).ok())
+                .filter(|s| !s.is_empty())
+        })
+        .or_else(|| {
+            std::env::var("OPENAI_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty())
+        });
+
+    // Build upstream request
+    let mut rb = client
+        .post(&real_url)
+        .header(header::ACCEPT, "text/event-stream")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CONNECTION, "close")
+        .json(&body);
+    if let Some(k) = &effective_bearer {
+        rb = rb.bearer_auth(k);
     }
     let resp = rb.send().await?;
 

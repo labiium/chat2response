@@ -21,6 +21,33 @@ chat2response [mcp.json] [--keys-backend=redis://...|sled:<path>|memory] [--syst
   - `memory` uses an in-memory, non-persistent store.
 
 Backend precedence (highest to lowest):
+
+## Multi-backend routing (per-model base URLs)
+
+Use the CHAT2RESPONSE_BACKENDS environment variable to route different model prefixes to different provider base URLs and API keys.
+
+Format:
+- Semicolon-separated rules; within each rule, use comma- or semicolon-separated key=value pairs.
+- Keys:
+  - prefix: model prefix to match (starts_with)
+  - base or base_url: provider base URL (include /v1 if required)
+  - key_env (optional): name of the env var holding the provider API key
+  - mode (optional): responses or chat; defaults to CHAT2RESPONSE_UPSTREAM_MODE or responses
+
+Example:
+- Route gpt-* to OpenAI, claude-* to Anthropic, and llama* to a local Ollama/vLLM chat endpoint:
+
+```
+export OPENAI_API_KEY=sk-openai...
+export ANTHROPIC_API_KEY=sk-anthropic...
+export CHAT2RESPONSE_BACKENDS="prefix=gpt-;base=https://api.openai.com/v1;key_env=OPENAI_API_KEY;mode=responses; prefix=claude-;base=https://api.anthropic.com/v1;key_env=ANTHROPIC_API_KEY;mode=responses; prefix=llama;base=http://localhost:11434/v1;mode=chat"
+chat2response
+```
+
+Notes:
+- When mode=chat for a rule, the server automatically converts Responses-shaped payloads to Chat Completions for that upstream and calls /v1/chat/completions.
+- Managed auth: when OPENAI_API_KEY is set and you use generated access tokens, the routing layer picks the correct provider key via key_env per rule, so clients never see provider secrets.
+- Passthrough auth: if you don’t run managed auth, the client Bearer is forwarded unless a provider-specific key_env is configured and no client Bearer is provided.
 1) `--keys-backend=...` (CLI)
 2) `CHAT2RESPONSE_REDIS_URL` (if set, Redis is used)
 3) `sled` (embedded; used when no Redis URL is provided)
@@ -624,6 +651,241 @@ curl -s -X POST http://localhost:8088/keys/set_expiration \
   -H "Content-Type: application/json" \
   -d '{"id":"<key-id>","ttl_seconds":3600}'
 ```
+
+## Analytics
+
+Chat2Response includes comprehensive analytics capabilities to track and analyze API usage, performance, and costs.
+
+### Configuration
+
+Analytics can use three different storage backends:
+
+1. **Redis** (recommended for production):
+```bash
+export CHAT2RESPONSE_ANALYTICS_REDIS_URL=redis://localhost:6379
+export CHAT2RESPONSE_ANALYTICS_TTL_SECONDS=2592000  # 30 days
+chat2response
+```
+
+2. **Sled** (embedded database):
+```bash
+export CHAT2RESPONSE_ANALYTICS_SLED_PATH=./analytics.db
+export CHAT2RESPONSE_ANALYTICS_TTL_SECONDS=2592000
+chat2response
+```
+
+3. **Memory** (development only):
+```bash
+export CHAT2RESPONSE_ANALYTICS_MAX_EVENTS=10000
+chat2response
+```
+
+### Analytics Endpoints
+
+#### Get Statistics
+```bash
+curl http://localhost:8088/analytics/stats
+```
+
+Returns:
+```json
+{
+  "total_events": 1542,
+  "backend_type": "redis",
+  "ttl_seconds": 2592000,
+  "max_events": null
+}
+```
+
+#### Query Events
+```bash
+# Last hour (default)
+curl http://localhost:8088/analytics/events
+
+# Custom time range with limit
+curl "http://localhost:8088/analytics/events?start=1704067200&end=1704153600&limit=100"
+```
+
+Returns:
+```json
+{
+  "events": [...],
+  "count": 42,
+  "start": 1704067200,
+  "end": 1704153600
+}
+```
+
+#### Get Aggregated Metrics
+```bash
+# Aggregate last hour
+curl http://localhost:8088/analytics/aggregate
+
+# Custom time range
+curl "http://localhost:8088/analytics/aggregate?start=1704067200&end=1704153600"
+```
+
+Returns:
+```json
+{
+  "total_requests": 1542,
+  "successful_requests": 1523,
+  "failed_requests": 19,
+  "total_input_tokens": 45230,
+  "total_output_tokens": 89441,
+  "total_cached_tokens": 12500,
+  "total_reasoning_tokens": 0,
+  "avg_duration_ms": 1247.3,
+  "avg_tokens_per_second": 71.6,
+  "total_cost": 5.43,
+  "cost_by_model": {
+    "gpt-4o": 3.21,
+    "gpt-4o-mini": 2.22
+  },
+  "models_used": {
+    "gpt-4o": 892,
+    "gpt-4o-mini": 650
+  },
+  "endpoints_hit": {
+    "/v1/chat/completions": 892,
+    "/v1/responses": 650
+  },
+  "backends_used": {
+    "openai": 1542
+  },
+  "period_start": 1704067200,
+  "period_end": 1704153600
+}
+```
+
+#### Export Analytics Data
+```bash
+# Export as JSON (default)
+curl "http://localhost:8088/analytics/export?start=1704067200&end=1704153600" -o analytics.json
+
+# Export as CSV
+curl "http://localhost:8088/analytics/export?start=1704067200&end=1704153600&format=csv" -o analytics.csv
+```
+
+CSV includes: `id, timestamp, endpoint, method, model, stream, status_code, success, duration_ms, tokens_per_second, prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, total_cost, backend, upstream_mode`
+
+#### Clear Analytics Data
+```bash
+curl -X POST http://localhost:8088/analytics/clear
+```
+
+### What's Tracked
+
+Each analytics event captures:
+
+**Request Metadata:**
+- Endpoint path
+- HTTP method
+- Model name
+- Streaming flag
+- Request size in bytes
+- Number of messages
+- Input token count
+- User agent
+- Client IP address
+
+**Response Metadata:**
+- HTTP status code
+- Response size in bytes
+- Output token count
+- Success/failure status
+- Error messages
+
+**Performance Metrics:**
+- Total request duration
+- Time to first byte (streaming)
+- Upstream request duration
+- **Tokens per second** (throughput)
+
+**Token Usage (Detailed):**
+- Prompt tokens
+- Completion tokens
+- Cached tokens (prompt caching)
+- Reasoning tokens (o1/o3 models)
+- Total tokens
+
+**Cost Tracking:**
+- Input cost (per request)
+- Output cost (per request)
+- Cached token cost
+- Total cost per request
+- Cost breakdowns by model
+
+**Authentication:**
+- Authentication status
+- API key ID (hashed)
+- API key label
+- Auth method
+
+**Routing Information:**
+- Backend used (OpenAI, Anthropic, etc.)
+- Upstream mode (chat/responses)
+- MCP enabled flag
+- MCP servers invoked
+- System prompt applied flag
+
+### Cost Tracking
+
+Analytics automatically calculates costs based on token usage and configurable pricing models.
+
+**Default Pricing** (OpenAI models as of January 2025):
+- GPT-4o: $2.50/1M input, $10.00/1M output, $1.25/1M cached
+- GPT-4o mini: $0.15/1M input, $0.60/1M output, $0.075/1M cached  
+- o1: $15.00/1M input, $60.00/1M output
+- o1-mini: $3.00/1M input, $12.00/1M output
+- GPT-4 Turbo: $10.00/1M input, $30.00/1M output
+- GPT-3.5 Turbo: $0.50/1M input, $1.50/1M output
+
+**Custom Pricing Configuration:**
+
+Create a JSON file with your pricing:
+
+```json
+{
+  "models": {
+    "claude-3-opus": {
+      "input_per_million": 15.00,
+      "output_per_million": 75.00,
+      "cached_per_million": null,
+      "reasoning_per_million": null
+    },
+    "claude-3-sonnet": {
+      "input_per_million": 3.00,
+      "output_per_million": 15.00
+    }
+  },
+  "default": {
+    "input_per_million": 2.50,
+    "output_per_million": 10.00,
+    "cached_per_million": 1.25
+  }
+}
+```
+
+Load it via environment variable:
+```bash
+export CHAT2RESPONSE_PRICING_CONFIG=/path/to/pricing.json
+chat2response
+```
+
+The pricing system supports:
+- Model-specific pricing with prefix matching (e.g., "gpt-4o" matches "gpt-4o-2024-08-06")
+- Cached token pricing (prompt caching discounts)
+- Reasoning token pricing (for o1/o3 models)
+- Fallback to default pricing for unknown models
+
+### Environment Variables
+
+- `CHAT2RESPONSE_ANALYTICS_REDIS_URL`: Redis connection URL
+- `CHAT2RESPONSE_ANALYTICS_SLED_PATH`: Path for Sled database
+- `CHAT2RESPONSE_ANALYTICS_MAX_EVENTS`: Max events in memory mode (default: 10000)
+- `CHAT2RESPONSE_ANALYTICS_TTL_SECONDS`: Time-to-live for events in seconds
+- `CHAT2RESPONSE_PRICING_CONFIG`: Path to custom pricing configuration JSON file
 
 ## Examples
 

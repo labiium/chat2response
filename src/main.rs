@@ -127,11 +127,50 @@ async fn main() -> std::io::Result<()> {
             )
         };
 
+    // Initialize analytics manager
+    let analytics = match chat2response::analytics::AnalyticsManager::from_env() {
+        Ok(mgr) => {
+            tracing::info!("Analytics initialized successfully");
+            Some(Arc::new(mgr))
+        }
+        Err(e) => {
+            tracing::warn!("Analytics initialization failed: {}", e);
+            tracing::info!("Continuing without analytics");
+            None
+        }
+    };
+
+    // Load pricing configuration
+    let pricing = if let Ok(pricing_path) = env::var("CHAT2RESPONSE_PRICING_CONFIG") {
+        let path = pricing_path.trim();
+        if !path.is_empty() {
+            tracing::info!("Loading pricing configuration from: {}", path);
+            match chat2response::pricing::PricingConfig::load_from_file(path) {
+                Ok(config) => {
+                    tracing::info!("Pricing configuration loaded");
+                    Arc::new(config)
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to load pricing config: {}, using defaults", e);
+                    Arc::new(chat2response::pricing::PricingConfig::default())
+                }
+            }
+        } else {
+            tracing::info!("Using default OpenAI pricing");
+            Arc::new(chat2response::pricing::PricingConfig::default())
+        }
+    } else {
+        tracing::info!("Using default OpenAI pricing");
+        Arc::new(chat2response::pricing::PricingConfig::default())
+    };
+
     let app_state = AppState {
         http: build_http_client_from_env(),
         mcp_manager: mcp_manager_arc,
         api_keys,
         system_prompt_config,
+        analytics,
+        pricing,
         mcp_config_path,
         system_prompt_config_path,
     };

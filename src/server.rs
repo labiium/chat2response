@@ -5,7 +5,7 @@ use serde::Deserialize;
 use crate::models::chat::ChatCompletionRequest;
 use crate::util::AppState;
 
-use crate::util::{error_response, openai_base_url, sse_proxy_stream_with_bearer};
+use crate::util::error_response;
 
 /// Query parameters for conversion/proxy endpoints.
 #[derive(Debug, Deserialize)]
@@ -60,9 +60,6 @@ async fn responses_passthrough(
     }
     drop(system_prompt_guard);
 
-    let base = openai_base_url();
-    let url = format!("{}/responses", base);
-
     // Determine managed (internal upstream key) vs passthrough mode
     let env_api_key = std::env::var("OPENAI_API_KEY")
         .ok()
@@ -83,11 +80,11 @@ async fn responses_passthrough(
             }
         });
 
-    // Resolve upstream bearer
+    // Resolve upstream bearer (managed mode validates client token but defers provider key selection to routing)
     let upstream_bearer = if managed_mode {
         if let Some(manager) = &state.api_keys {
             match client_bearer.as_deref().map(|tok| manager.verify(tok)) {
-                Some(crate::auth::Verification::Valid { .. }) => env_api_key.clone(),
+                Some(crate::auth::Verification::Valid { .. }) => None,
                 Some(crate::auth::Verification::Revoked { .. }) => {
                     return error_response(http::StatusCode::UNAUTHORIZED, "API key revoked");
                 }
@@ -105,7 +102,8 @@ async fn responses_passthrough(
                 }
             }
         } else {
-            env_api_key.clone()
+            // No manager: accept and let routing pick env key
+            None
         }
     } else {
         if client_bearer.is_none() {
@@ -125,26 +123,116 @@ async fn responses_passthrough(
     let client = &state.http;
 
     if stream {
-        match sse_proxy_stream_with_bearer(client, &url, &body, upstream_bearer.as_deref()).await {
+        // Routed streaming: picks provider base URL, path, mode, and appropriate API key
+        match crate::util::sse_proxy_stream_with_bearer_routed(
+            client,
+            &body,
+            upstream_bearer.as_deref(),
+        )
+        .await
+        {
             Ok(resp) => resp,
             Err(e) => error_response(http::StatusCode::BAD_GATEWAY, &e.to_string()),
         }
     } else {
-        // Determine upstream mode and translate if necessary (vLLM/Ollama use Chat)
-        let mode = crate::util::upstream_mode_from_env();
-        let real_url = crate::util::rewrite_responses_url_for_mode(&url, mode);
+        // Non-stream routed POST with optional translation when upstream expects Chat
         let mut effective_body = body.clone();
-        if matches!(mode, crate::util::UpstreamMode::Chat) {
-            let chat_req = crate::conversion::responses_json_to_chat_request(&effective_body);
-            if let Ok(v) = serde_json::to_value(chat_req) {
-                effective_body = v;
+
+        // Resolve backend by model prefix from CHAT2RESPONSE_BACKENDS; fallback to OpenAI
+        let mut base_url: Option<String> = None;
+        let mut route_mode: Option<crate::util::UpstreamMode> = None;
+        let mut key_env: Option<String> = None;
+
+        if let Ok(cfg) = std::env::var("CHAT2RESPONSE_BACKENDS") {
+            if let Some(m) = effective_body.get("model").and_then(|v| v.as_str()) {
+                for rule_raw in cfg.split(';') {
+                    let r = rule_raw.trim();
+                    if r.is_empty() {
+                        continue;
+                    }
+                    let mut prefix: Option<String> = None;
+                    let mut base: Option<String> = None;
+                    let mut key_env_local: Option<String> = None;
+                    let mut mode_local: Option<crate::util::UpstreamMode> = None;
+
+                    for kv in r.split([',', ';']) {
+                        let p = kv.trim();
+                        if p.is_empty() || !p.contains('=') {
+                            continue;
+                        }
+                        let mut it = p.splitn(2, '=');
+                        let k = it.next().unwrap_or("").trim().to_ascii_lowercase();
+                        let v = it.next().unwrap_or("").trim().to_string();
+                        if v.is_empty() {
+                            continue;
+                        }
+                        match k.as_str() {
+                            "prefix" => prefix = Some(v),
+                            "base" | "base_url" => base = Some(v),
+                            "key_env" | "api_key_env" => key_env_local = Some(v),
+                            "mode" => {
+                                let vv = v.to_ascii_lowercase();
+                                mode_local = if vv == "chat" {
+                                    Some(crate::util::UpstreamMode::Chat)
+                                } else {
+                                    Some(crate::util::UpstreamMode::Responses)
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if let (Some(pfx), Some(bu)) = (prefix, base) {
+                        if m.starts_with(pfx.as_str()) {
+                            base_url = Some(bu);
+                            route_mode = mode_local;
+                            key_env = key_env_local;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        let mode = route_mode.unwrap_or_else(crate::util::upstream_mode_from_env);
+        let base = base_url.unwrap_or_else(crate::util::openai_base_url);
+        let real_url = match mode {
+            crate::util::UpstreamMode::Responses => {
+                format!("{}/responses", base.trim_end_matches('/'))
+            }
+            crate::util::UpstreamMode::Chat => {
+                // Translate Responses-shaped payload to Chat for Chat upstreams
+                let chat_req = crate::conversion::responses_json_to_chat_request(&effective_body);
+                if let Ok(v) = serde_json::to_value(chat_req) {
+                    effective_body = v;
+                }
+                format!("{}/chat/completions", base.trim_end_matches('/'))
+            }
+        };
+
+        // Determine effective bearer: explicit (passthrough) > key_env > OPENAI_API_KEY
+        let mut eff_bearer = upstream_bearer.clone();
+        if eff_bearer.is_none() {
+            if let Some(k) = key_env {
+                if let Ok(v) = std::env::var(k) {
+                    if !v.is_empty() {
+                        eff_bearer = Some(v);
+                    }
+                }
+            }
+        }
+        if eff_bearer.is_none() {
+            if let Ok(v) = std::env::var("OPENAI_API_KEY") {
+                if !v.is_empty() {
+                    eff_bearer = Some(v);
+                }
             }
         }
 
         let mut req = client
             .post(&real_url)
             .header("content-type", "application/json");
-        if let Some(b) = upstream_bearer {
+        if let Some(b) = eff_bearer {
             req = req.bearer_auth(b);
         }
         match req.json(&effective_body).send().await {
@@ -179,7 +267,12 @@ pub fn config_routes(cfg: &mut web::ServiceConfig) {
                 "/reload/system_prompt",
                 web::post().to(reload_system_prompt),
             )
-            .route("/reload/all", web::post().to(reload_all)),
+            .route("/reload/all", web::post().to(reload_all))
+            .route("/analytics/stats", web::get().to(analytics_stats))
+            .route("/analytics/events", web::get().to(analytics_events))
+            .route("/analytics/aggregate", web::get().to(analytics_aggregate))
+            .route("/analytics/export", web::get().to(analytics_export))
+            .route("/analytics/clear", web::post().to(analytics_clear)),
     );
 }
 
@@ -198,6 +291,11 @@ async fn status(state: web::Data<AppState>) -> impl Responder {
         "/reload/mcp",
         "/reload/system_prompt",
         "/reload/all",
+        "/analytics/stats",
+        "/analytics/events",
+        "/analytics/aggregate",
+        "/analytics/export",
+        "/analytics/clear",
     ];
 
     // Get current configuration status
@@ -208,6 +306,14 @@ async fn status(state: web::Data<AppState>) -> impl Responder {
     let system_prompt_guard = state.system_prompt_config.read().await;
     let system_prompt_enabled = system_prompt_guard.enabled;
     drop(system_prompt_guard);
+
+    // Get analytics status
+    let analytics_enabled = state.analytics.is_some();
+    let analytics_stats = if let Some(mgr) = &state.analytics {
+        mgr.stats().await.ok()
+    } else {
+        None
+    };
 
     web::Json(serde_json::json!({
         "name": "chat2response",
@@ -224,6 +330,10 @@ async fn status(state: web::Data<AppState>) -> impl Responder {
                 "enabled": system_prompt_enabled,
                 "config_path": system_prompt_config_path,
                 "reloadable": system_prompt_config_path.is_some()
+            },
+            "analytics": {
+                "enabled": analytics_enabled,
+                "stats": analytics_stats
             }
         }
     }))
@@ -281,9 +391,6 @@ async fn chat_completions_passthrough(
     }
     drop(system_prompt_guard);
 
-    let base = openai_base_url();
-    let url = format!("{}/chat/completions", base);
-
     // Determine managed (internal upstream key) vs passthrough mode
     let env_api_key = std::env::var("OPENAI_API_KEY")
         .ok()
@@ -304,11 +411,11 @@ async fn chat_completions_passthrough(
             }
         });
 
-    // Resolve upstream bearer
+    // Resolve upstream bearer (managed mode validates client token but defers provider key selection to routing)
     let upstream_bearer = if managed_mode {
         if let Some(manager) = &state.api_keys {
             match client_bearer.as_deref().map(|tok| manager.verify(tok)) {
-                Some(crate::auth::Verification::Valid { .. }) => env_api_key.clone(),
+                Some(crate::auth::Verification::Valid { .. }) => None,
                 Some(crate::auth::Verification::Revoked { .. }) => {
                     return error_response(http::StatusCode::UNAUTHORIZED, "API key revoked");
                 }
@@ -326,8 +433,8 @@ async fn chat_completions_passthrough(
                 }
             }
         } else {
-            // No manager: accept and use env key
-            env_api_key.clone()
+            // No manager: accept and let routing pick env key
+            None
         }
     } else {
         if client_bearer.is_none() {
@@ -347,14 +454,122 @@ async fn chat_completions_passthrough(
 
     let client = &state.http;
 
+    // Resolve backend base URL and optional key env by model prefix
+    let mut base_url: Option<String> = None;
+    let mut key_env: Option<String> = None;
+    if let Ok(cfg) = std::env::var("CHAT2RESPONSE_BACKENDS") {
+        if let Some(m) = body.get("model").and_then(|v| v.as_str()) {
+            for rule_raw in cfg.split(';') {
+                let r = rule_raw.trim();
+                if r.is_empty() {
+                    continue;
+                }
+                let mut prefix: Option<String> = None;
+                let mut base: Option<String> = None;
+                let mut key_env_local: Option<String> = None;
+
+                for kv in r.split([',', ';']) {
+                    let p = kv.trim();
+                    if p.is_empty() || !p.contains('=') {
+                        continue;
+                    }
+                    let mut it = p.splitn(2, '=');
+                    let k = it.next().unwrap_or("").trim().to_ascii_lowercase();
+                    let v = it.next().unwrap_or("").trim().to_string();
+                    if v.is_empty() {
+                        continue;
+                    }
+                    match k.as_str() {
+                        "prefix" => prefix = Some(v),
+                        "base" | "base_url" => base = Some(v),
+                        "key_env" | "api_key_env" => key_env_local = Some(v),
+                        _ => {}
+                    }
+                }
+
+                if let (Some(pfx), Some(bu)) = (prefix, base) {
+                    if m.starts_with(pfx.as_str()) {
+                        base_url = Some(bu);
+                        key_env = key_env_local;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let base = base_url.unwrap_or_else(crate::util::openai_base_url);
+    let url = format!("{}/chat/completions", base.trim_end_matches('/'));
+
+    // Determine effective bearer: explicit (passthrough) > key_env > OPENAI_API_KEY
+    let mut eff_bearer = upstream_bearer.clone();
+    if eff_bearer.is_none() {
+        if let Some(k) = key_env.clone() {
+            if let Ok(v) = std::env::var(k) {
+                if !v.is_empty() {
+                    eff_bearer = Some(v);
+                }
+            }
+        }
+    }
+    if eff_bearer.is_none() {
+        if let Ok(v) = std::env::var("OPENAI_API_KEY") {
+            if !v.is_empty() {
+                eff_bearer = Some(v);
+            }
+        }
+    }
+
     if stream {
-        match sse_proxy_stream_with_bearer(client, &url, &body, upstream_bearer.as_deref()).await {
-            Ok(resp) => resp,
+        // Direct streaming passthrough to routed Chat endpoint
+        use bytes::Bytes;
+        use futures_util::TryStreamExt;
+
+        let mut rb = client
+            .post(&url)
+            .header("accept", "text/event-stream")
+            .header("content-type", "application/json")
+            .header("connection", "close")
+            .json(&body);
+        if let Some(b) = eff_bearer {
+            rb = rb.bearer_auth(b);
+        }
+        match rb.send().await {
+            Ok(up) => {
+                let status = up.status();
+                if !status.is_success() {
+                    let bytes = up.bytes().await.unwrap_or_default();
+                    return HttpResponse::build(
+                        actix_web::http::StatusCode::from_u16(status.as_u16()).unwrap(),
+                    )
+                    .body(bytes);
+                }
+                let upstream_ct = up.headers().get("content-type").cloned();
+                let stream = up
+                    .bytes_stream()
+                    .map_err(|e| std::io::Error::other(e.to_string()))
+                    .map_ok(Bytes::from);
+
+                let mut response = HttpResponse::Ok();
+                if let Some(ct) = upstream_ct {
+                    if let Ok(ct_str) = ct.to_str() {
+                        response.insert_header(("content-type", ct_str));
+                    } else {
+                        response.insert_header(("content-type", "text/event-stream"));
+                    }
+                } else {
+                    response.insert_header(("content-type", "text/event-stream"));
+                }
+
+                response
+                    .insert_header(("cache-control", "no-cache"))
+                    .insert_header(("connection", "keep-alive"))
+                    .streaming(stream)
+            }
             Err(e) => error_response(http::StatusCode::BAD_GATEWAY, &e.to_string()),
         }
     } else {
         let mut req = client.post(&url).header("content-type", "application/json");
-        if let Some(b) = upstream_bearer {
+        if let Some(b) = eff_bearer {
             req = req.bearer_auth(b);
         }
         match req.json(&body).send().await {
@@ -747,4 +962,264 @@ async fn reload_all(state: web::Data<AppState>) -> impl Responder {
     }
 
     HttpResponse::Ok().json(results)
+}
+
+/// Analytics endpoints
+
+/// Get analytics statistics
+async fn analytics_stats(state: web::Data<AppState>) -> impl Responder {
+    match &state.analytics {
+        Some(mgr) => match mgr.stats().await {
+            Ok(stats) => HttpResponse::Ok().json(stats),
+            Err(e) => error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to get analytics stats: {}", e),
+            ),
+        },
+        None => error_response(
+            http::StatusCode::SERVICE_UNAVAILABLE,
+            "Analytics not enabled",
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct AnalyticsEventsQuery {
+    /// Start timestamp (unix seconds)
+    start: Option<u64>,
+    /// End timestamp (unix seconds)
+    end: Option<u64>,
+    /// Maximum number of events to return
+    limit: Option<usize>,
+}
+
+/// Query analytics events
+async fn analytics_events(
+    state: web::Data<AppState>,
+    query: web::Query<AnalyticsEventsQuery>,
+) -> impl Responder {
+    match &state.analytics {
+        Some(mgr) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            let start = query.start.unwrap_or(now.saturating_sub(3600)); // Default: last hour
+            let end = query.end.unwrap_or(now);
+
+            match mgr.query_range(start, end, query.limit).await {
+                Ok(events) => HttpResponse::Ok().json(serde_json::json!({
+                    "events": events,
+                    "count": events.len(),
+                    "start": start,
+                    "end": end
+                })),
+                Err(e) => error_response(
+                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("Failed to query events: {}", e),
+                ),
+            }
+        }
+        None => error_response(
+            http::StatusCode::SERVICE_UNAVAILABLE,
+            "Analytics not enabled",
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct AnalyticsAggregateQuery {
+    /// Start timestamp (unix seconds)
+    start: Option<u64>,
+    /// End timestamp (unix seconds)
+    end: Option<u64>,
+}
+
+/// Get aggregated analytics
+async fn analytics_aggregate(
+    state: web::Data<AppState>,
+    query: web::Query<AnalyticsAggregateQuery>,
+) -> impl Responder {
+    match &state.analytics {
+        Some(mgr) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            let start = query.start.unwrap_or(now.saturating_sub(3600)); // Default: last hour
+            let end = query.end.unwrap_or(now);
+
+            match mgr.aggregate(start, end).await {
+                Ok(agg) => HttpResponse::Ok().json(agg),
+                Err(e) => error_response(
+                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("Failed to aggregate analytics: {}", e),
+                ),
+            }
+        }
+        None => error_response(
+            http::StatusCode::SERVICE_UNAVAILABLE,
+            "Analytics not enabled",
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct AnalyticsExportQuery {
+    /// Start timestamp (unix seconds)
+    start: Option<u64>,
+    /// End timestamp (unix seconds)
+    end: Option<u64>,
+    /// Export format (json, csv)
+    format: Option<String>,
+}
+
+/// Export analytics data
+async fn analytics_export(
+    state: web::Data<AppState>,
+    query: web::Query<AnalyticsExportQuery>,
+) -> impl Responder {
+    match &state.analytics {
+        Some(mgr) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            let start = query.start.unwrap_or(now.saturating_sub(86400)); // Default: last 24h
+            let end = query.end.unwrap_or(now);
+            let format = query.format.as_deref().unwrap_or("json");
+
+            match mgr.query_range(start, end, None).await {
+                Ok(events) => match format {
+                    "csv" => {
+                        // Generate CSV export
+                        let mut csv_output = String::from(
+                            "id,timestamp,endpoint,method,model,stream,status_code,success,duration_ms,tokens_per_second,prompt_tokens,completion_tokens,cached_tokens,reasoning_tokens,total_cost,backend,upstream_mode\n",
+                        );
+
+                        for event in events {
+                            let model = event.request.model.as_deref().unwrap_or("");
+                            let status =
+                                event.response.as_ref().map(|r| r.status_code).unwrap_or(0);
+                            let success =
+                                event.response.as_ref().map(|r| r.success).unwrap_or(false);
+
+                            let (prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens) =
+                                if let Some(ref usage) = event.token_usage {
+                                    (
+                                        usage.prompt_tokens,
+                                        usage.completion_tokens,
+                                        usage.cached_tokens.unwrap_or(0),
+                                        usage.reasoning_tokens.unwrap_or(0),
+                                    )
+                                } else {
+                                    let input = event.request.input_tokens.unwrap_or(0);
+                                    let output = event
+                                        .response
+                                        .as_ref()
+                                        .and_then(|r| r.output_tokens)
+                                        .unwrap_or(0);
+                                    (input, output, 0, 0)
+                                };
+
+                            let tps = event
+                                .performance
+                                .tokens_per_second
+                                .map(|t| format!("{:.2}", t))
+                                .unwrap_or_else(|| "".to_string());
+
+                            let cost = event
+                                .cost
+                                .as_ref()
+                                .map(|c| format!("{:.6}", c.total_cost))
+                                .unwrap_or_else(|| "".to_string());
+
+                            csv_output.push_str(&format!(
+                                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                                event.id,
+                                event.timestamp,
+                                event.request.endpoint,
+                                event.request.method,
+                                model,
+                                event.request.stream,
+                                status,
+                                success,
+                                event.performance.duration_ms,
+                                tps,
+                                prompt_tokens,
+                                completion_tokens,
+                                cached_tokens,
+                                reasoning_tokens,
+                                cost,
+                                event.routing.backend,
+                                event.routing.upstream_mode
+                            ));
+                        }
+
+                        HttpResponse::Ok()
+                            .insert_header(("content-type", "text/csv"))
+                            .insert_header((
+                                "content-disposition",
+                                format!(
+                                    "attachment; filename=\"analytics_{}_to_{}.csv\"",
+                                    start, end
+                                ),
+                            ))
+                            .body(csv_output)
+                    }
+                    _ => {
+                        // Default JSON export
+                        HttpResponse::Ok()
+                            .insert_header(("content-type", "application/json"))
+                            .insert_header((
+                                "content-disposition",
+                                format!(
+                                    "attachment; filename=\"analytics_{}_to_{}.json\"",
+                                    start, end
+                                ),
+                            ))
+                            .json(serde_json::json!({
+                                "events": events,
+                                "count": events.len(),
+                                "period": {
+                                    "start": start,
+                                    "end": end
+                                }
+                            }))
+                    }
+                },
+                Err(e) => error_response(
+                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("Failed to export analytics: {}", e),
+                ),
+            }
+        }
+        None => error_response(
+            http::StatusCode::SERVICE_UNAVAILABLE,
+            "Analytics not enabled",
+        ),
+    }
+}
+
+/// Clear all analytics data
+async fn analytics_clear(state: web::Data<AppState>) -> impl Responder {
+    match &state.analytics {
+        Some(mgr) => match mgr.clear().await {
+            Ok(_) => HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "message": "Analytics data cleared"
+            })),
+            Err(e) => error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to clear analytics: {}", e),
+            ),
+        },
+        None => error_response(
+            http::StatusCode::SERVICE_UNAVAILABLE,
+            "Analytics not enabled",
+        ),
+    }
 }

@@ -3,7 +3,7 @@
 //
 // These tests verify that the server configuration compiles correctly.
 
-use actix_web::{web, App};
+use actix_web::App;
 use chat2response::server::config_routes;
 
 #[test]
