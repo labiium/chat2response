@@ -25,24 +25,22 @@ pub fn responses_to_chat_response(
     let mut finish_reason = "stop";
 
     for item in &responses_response.output {
-        match item {
-            resp::OutputItem::ToolCall {
-                id: _,
-                name,
-                arguments,
-                call_id,
-            } => {
-                tool_calls.push(chat::ToolCall {
-                    id: call_id.clone(),
-                    call_type: "function".to_string(),
-                    function: chat::FunctionCall {
-                        name: name.clone(),
-                        arguments: arguments.clone(),
-                    },
-                });
-                finish_reason = "tool_calls";
-            }
-            _ => {}
+        if let resp::OutputItem::ToolCall {
+            id: _,
+            name,
+            arguments,
+            call_id,
+        } = item
+        {
+            tool_calls.push(chat::ToolCall {
+                id: call_id.clone(),
+                call_type: "function".to_string(),
+                function: chat::FunctionCall {
+                    name: name.clone(),
+                    arguments: arguments.clone(),
+                },
+            });
+            finish_reason = "tool_calls";
         }
     }
 

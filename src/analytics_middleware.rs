@@ -21,6 +21,16 @@ pub struct AnalyticsContext {
     pub routing_metadata: RoutingMetadata,
 }
 
+/// Summary of the outcome we're about to record for analytics.
+pub struct AnalyticsOutcome {
+    pub status_code: u16,
+    pub response_size: usize,
+    pub success: bool,
+    pub error_message: Option<String>,
+    pub output_tokens: Option<u64>,
+    pub token_usage: Option<crate::analytics::TokenUsage>,
+}
+
 impl AnalyticsContext {
     pub fn new(req: &ServiceRequest) -> Self {
         let start_time = Instant::now();
@@ -142,25 +152,20 @@ impl AnalyticsContext {
         self,
         manager: &AnalyticsManager,
         pricing: &crate::pricing::PricingConfig,
-        status_code: u16,
-        response_size: usize,
-        success: bool,
-        error_message: Option<String>,
-        output_tokens: Option<u64>,
-        token_usage: Option<crate::analytics::TokenUsage>,
+        outcome: AnalyticsOutcome,
     ) {
         let duration_ms = self.start_time.elapsed().as_millis() as u64;
 
         let response_metadata = ResponseMetadata {
-            status_code,
-            size_bytes: response_size,
-            output_tokens,
-            success,
-            error_message,
+            status_code: outcome.status_code,
+            size_bytes: outcome.response_size,
+            output_tokens: outcome.output_tokens,
+            success: outcome.success,
+            error_message: outcome.error_message,
         };
 
         // Calculate tokens per second if we have output tokens
-        let tokens_per_second = if let Some(tokens) = output_tokens {
+        let tokens_per_second = if let Some(tokens) = outcome.output_tokens {
             if duration_ms > 0 {
                 Some((tokens as f64 / duration_ms as f64) * 1000.0)
             } else {
@@ -179,7 +184,7 @@ impl AnalyticsContext {
 
         // Calculate cost if we have token usage and model
         let cost = if let (Some(ref usage), Some(ref model)) =
-            (&token_usage, &self.request_metadata.model)
+            (&outcome.token_usage, &self.request_metadata.model)
         {
             pricing.calculate_cost(
                 model,
@@ -200,7 +205,7 @@ impl AnalyticsContext {
             performance: performance_metrics,
             auth: self.auth_metadata,
             routing: self.routing_metadata,
-            token_usage,
+            token_usage: outcome.token_usage,
             cost,
         };
 

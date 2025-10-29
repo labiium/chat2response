@@ -224,7 +224,6 @@ impl AnalyticsManager {
 
         let file = OpenOptions::new()
             .create(true)
-            .write(true)
             .append(true)
             .open(&path)
             .map_err(|e| AnalyticsError::Storage(e.to_string()))?;
@@ -452,17 +451,17 @@ impl AnalyticsManager {
                 let start_key = format!("ts:{}", start_ts);
                 let end_key = format!("ts:{}", end_ts + 1);
 
-                for item in db.range(start_key.as_bytes()..end_key.as_bytes()) {
-                    if let Ok((_, event_id_bytes)) = item {
-                        if let Ok(event_id) = String::from_utf8(event_id_bytes.to_vec()) {
-                            let key = format!("event:{}", event_id);
-                            if let Ok(Some(event_bytes)) = db.get(key.as_bytes()) {
-                                if let Ok(event) = serde_json::from_slice(&event_bytes) {
-                                    events.push(event);
-                                    if let Some(limit) = limit {
-                                        if events.len() >= limit {
-                                            break;
-                                        }
+                for (_, event_id_bytes) in
+                    db.range(start_key.as_bytes()..end_key.as_bytes()).flatten()
+                {
+                    if let Ok(event_id) = String::from_utf8(event_id_bytes.to_vec()) {
+                        let key = format!("event:{}", event_id);
+                        if let Ok(Some(event_bytes)) = db.get(key.as_bytes()) {
+                            if let Ok(event) = serde_json::from_slice(&event_bytes) {
+                                events.push(event);
+                                if let Some(limit) = limit {
+                                    if events.len() >= limit {
+                                        break;
                                     }
                                 }
                             }
