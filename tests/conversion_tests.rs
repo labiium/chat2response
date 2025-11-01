@@ -195,10 +195,14 @@ fn tools_and_tool_choice_are_forwarded() {
     let tools = out.tools.expect("missing tools");
     assert_eq!(tools.len(), 1);
     match &tools[0] {
-        chat2response::models::responses::ResponsesToolDefinition::Function { function } => {
-            assert_eq!(function.name, "lookup");
-            assert_eq!(function.description.as_deref(), Some("Lookup a value"));
-            assert!(function.parameters.is_object());
+        chat2response::models::responses::ResponsesToolDefinition::Function {
+            name,
+            description,
+            parameters,
+        } => {
+            assert_eq!(name, "lookup");
+            assert_eq!(description.as_deref(), Some("Lookup a value"));
+            assert!(parameters.is_object());
         }
     }
 
@@ -290,7 +294,21 @@ fn content_array_is_preserved_for_multimodal_shape() {
     let out = to_responses_request(&req, Some("conv-42".into()));
     assert_eq!(out.messages.len(), 1);
     assert_eq!(out.messages[0].role, "user");
-    assert_eq!(out.messages[0].content, content);
+
+    // Verify content was converted to Responses API format
+    let converted_content = &out.messages[0].content;
+    assert!(converted_content.is_array());
+    let arr = converted_content.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+
+    // Check text conversion: "text" → "input_text"
+    assert_eq!(arr[0]["type"], "input_text");
+    assert_eq!(arr[0]["text"], "Describe this image");
+
+    // Check image conversion: "image_url" (nested) → "input_image" (flattened)
+    assert_eq!(arr[1]["type"], "input_image");
+    assert_eq!(arr[1]["image_url"], "https://example.com/cat.png");
+
     assert_eq!(out.max_output_tokens, Some(32));
     assert_eq!(out.conversation.as_deref(), Some("conv-42"));
 }

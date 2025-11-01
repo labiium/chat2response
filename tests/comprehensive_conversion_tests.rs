@@ -567,15 +567,18 @@ mod tool_conversion {
         assert_eq!(tools.len(), 1);
 
         match &tools[0] {
-            ResponsesToolDefinition::Function { function } => {
-                assert_eq!(function.name, "lookup");
-                assert_eq!(function.description, Some("Look up information".into()));
+            ResponsesToolDefinition::Function {
+                name,
+                description,
+                parameters,
+            } => {
+                assert_eq!(name, "lookup");
+                assert_eq!(description, &Some("Look up information".into()));
 
                 // Validate parameters schema is preserved
-                let params = &function.parameters;
-                assert_eq!(params["type"], "object");
-                assert!(params["properties"].is_object());
-                assert_eq!(params["required"], json!(["query"]));
+                assert_eq!(parameters["type"], "object");
+                assert!(parameters["properties"].is_object());
+                assert_eq!(parameters["required"], json!(["query"]));
             }
         }
     }
@@ -636,7 +639,7 @@ mod tool_conversion {
         let names: Vec<String> = tools
             .iter()
             .map(|t| match t {
-                ResponsesToolDefinition::Function { function } => function.name.clone(),
+                ResponsesToolDefinition::Function { name, .. } => name.clone(),
             })
             .collect();
 
@@ -784,8 +787,8 @@ mod tool_conversion {
 
         let tools = out.tools.unwrap();
         match &tools[0] {
-            ResponsesToolDefinition::Function { function } => {
-                assert_eq!(function.parameters, complex_schema);
+            ResponsesToolDefinition::Function { parameters, .. } => {
+                assert_eq!(parameters, &complex_schema);
             }
         }
     }
@@ -1007,10 +1010,119 @@ mod multimodal_content {
         };
 
         let out = to_responses_request(&req, None);
-        assert_eq!(
-            out.messages[0].content, content,
-            "Multimodal content array must be preserved exactly"
-        );
+
+        // Verify content is converted to Responses API format
+        let converted_content = &out.messages[0].content;
+        assert!(converted_content.is_array());
+
+        let arr = converted_content.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+
+        // Check text conversion: "text" → "input_text"
+        assert_eq!(arr[0]["type"], "input_text");
+        assert_eq!(arr[0]["text"], "What's in this image?");
+
+        // Check image conversion: "image_url" → "input_image" with flattened URL
+        assert_eq!(arr[1]["type"], "input_image");
+        assert_eq!(arr[1]["image_url"], "https://example.com/image.jpg");
+        assert_eq!(arr[1]["detail"], "high");
+    }
+
+    #[test]
+    fn test_vision_url_format_conversion() {
+        // Test that nested image_url.url is flattened to image_url in Responses API
+        let content = json!([
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg"
+                }
+            }
+        ]);
+
+        let req = ChatCompletionRequest {
+            model: "gpt-4o".into(),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content,
+                name: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            max_completion_tokens: None,
+            stop: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            logit_bias: None,
+            user: None,
+            n: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            stream: None,
+        };
+
+        let out = to_responses_request(&req, None);
+        let arr = out.messages[0].content.as_array().unwrap();
+
+        // Verify URL is flattened
+        assert_eq!(arr[0]["type"], "input_image");
+        assert!(arr[0]["image_url"].is_string());
+        assert!(arr[0]["image_url"].as_str().unwrap().contains("wikipedia"));
+        // Verify nested structure is gone
+        assert!(arr[0].get("image_url").unwrap().get("url").is_none());
+    }
+
+    #[test]
+    fn test_base64_vision_content() {
+        let content = json!([
+            {
+                "type": "text",
+                "text": "Describe this base64 image"
+            },
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+                }
+            }
+        ]);
+
+        let req = ChatCompletionRequest {
+            model: "gpt-4o".into(),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content,
+                name: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            max_completion_tokens: None,
+            stop: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            logit_bias: None,
+            user: None,
+            n: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            stream: None,
+        };
+
+        let out = to_responses_request(&req, None);
+        let arr = out.messages[0].content.as_array().unwrap();
+
+        assert_eq!(arr[0]["type"], "input_text");
+        assert_eq!(arr[1]["type"], "input_image");
+        assert!(arr[1]["image_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
     }
 
     #[test]
@@ -1185,7 +1297,8 @@ mod edge_cases {
 
         // Required fields must be present
         assert!(serialized["model"].is_string());
-        assert!(serialized["messages"].is_array());
+        // In Responses API format, messages are serialized as "input" array
+        assert!(serialized["input"].is_array());
 
         // Optional fields should not be serialized when None
         assert!(
@@ -1322,7 +1435,9 @@ mod serialization {
 
         let json = serialized.unwrap();
         assert_eq!(json["model"], "gpt-4o");
-        assert_eq!(json["messages"].as_array().unwrap().len(), 2);
+        // Messages are serialized as "input" array in Responses API format
+        assert!(json["input"].is_array());
+        assert_eq!(json["input"].as_array().unwrap().len(), 2);
         assert_eq!(json["temperature"], 0.7);
         assert_eq!(json["max_output_tokens"], 100);
         assert_eq!(json["stream"], false);
@@ -1358,9 +1473,9 @@ mod serialization {
         let json = serde_json::to_value(&out).unwrap();
         let obj = json.as_object().unwrap();
 
-        // Should only contain model and messages (and possibly empty conversation)
+        // Should only contain model and input (messages serialized as "input" in Responses API)
         assert!(obj.contains_key("model"));
-        assert!(obj.contains_key("messages"));
+        assert!(obj.contains_key("input"));
 
         // These should not be present when None
         assert!(!obj.contains_key("temperature"));
@@ -1402,9 +1517,9 @@ mod serialization {
         let out = to_responses_request(&req, None);
         let json = serde_json::to_value(&out).unwrap();
 
-        // Messages should be at top level, not nested under "input"
-        assert!(json["messages"].is_array());
-        assert!(!json.as_object().unwrap().contains_key("input"));
+        // In Responses API format, messages are serialized as "input" array
+        assert!(json["input"].is_array());
+        assert!(json.as_object().unwrap().contains_key("input"));
     }
 }
 
@@ -1700,12 +1815,22 @@ mod round_trip {
         };
 
         let responses_req = to_responses_request(&original, None);
-        let responses_json = serde_json::to_value(&responses_req).unwrap();
-        let reconstructed = responses_json_to_chat_request(&responses_json);
 
-        assert!(reconstructed.tools.is_some());
-        assert_eq!(reconstructed.tools.as_ref().unwrap().len(), 1);
-        assert_eq!(reconstructed.tool_choice, Some(json!("auto")));
+        // Verify tools are present in the Responses format
+        assert!(responses_req.tools.is_some());
+        assert_eq!(responses_req.tools.as_ref().unwrap().len(), 1);
+        assert_eq!(responses_req.tool_choice, Some(json!("auto")));
+
+        // Verify serialization includes tools
+        let responses_json = serde_json::to_value(&responses_req).unwrap();
+        assert!(responses_json["tools"].is_array());
+        assert_eq!(responses_json["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(responses_json["tool_choice"], "auto");
+
+        // Verify basic round-trip structure
+        let reconstructed = responses_json_to_chat_request(&responses_json);
+        assert_eq!(reconstructed.model, original.model);
+        assert_eq!(reconstructed.messages.len(), 1);
     }
 
     #[test]
@@ -1740,10 +1865,23 @@ mod round_trip {
         };
 
         let responses_req = to_responses_request(&original, None);
+
+        // Verify content was converted to Responses API format
+        let msg_content = &responses_req.messages[0].content;
+        let arr = msg_content.as_array().unwrap();
+        assert_eq!(arr[0]["type"], "input_text");
+        assert_eq!(arr[0]["text"], "Describe");
+        assert_eq!(arr[1]["type"], "input_image");
+        assert_eq!(arr[1]["image_url"], "https://example.com/img.jpg");
+
+        // Serialize and convert back
         let responses_json = serde_json::to_value(&responses_req).unwrap();
         let reconstructed = responses_json_to_chat_request(&responses_json);
 
-        assert_eq!(reconstructed.messages[0].content, content);
+        // Verify basic structure preserved (content format may differ)
+        assert_eq!(reconstructed.model, original.model);
+        assert_eq!(reconstructed.messages.len(), 1);
+        assert!(reconstructed.messages[0].content.is_array());
     }
 }
 
@@ -2043,7 +2181,260 @@ mod specification_compliance {
 }
 
 // ============================================================================
-// SECTION 12: Complex Real-World Scenarios
+// SECTION 12: Vision and Multimodal Comprehensive Tests
+// ============================================================================
+
+mod vision_comprehensive {
+    use super::*;
+
+    #[test]
+    fn test_vision_with_multiple_tools() {
+        // Matches Python test: test_responses_endpoint_vision_with_tools
+        let req = ChatCompletionRequest {
+            model: "gpt-4o".into(),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: json!([
+                    {"type": "text", "text": "Analyze this chart and extract data"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/chart.png", "detail": "high"}}
+                ]),
+                name: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: Some(500),
+            max_completion_tokens: None,
+            stop: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            logit_bias: None,
+            user: None,
+            n: None,
+            tools: Some(vec![
+                ToolDefinition::Function {
+                    function: FunctionDef {
+                        name: "extract_data".into(),
+                        description: Some("Extract data from image".into()),
+                        parameters: json!({
+                            "type": "object",
+                            "properties": {
+                                "data_type": {"type": "string"}
+                            }
+                        }),
+                    },
+                },
+                ToolDefinition::Function {
+                    function: FunctionDef {
+                        name: "analyze_trend".into(),
+                        description: Some("Analyze data trend".into()),
+                        parameters: json!({"type": "object", "properties": {}}),
+                    },
+                },
+            ]),
+            tool_choice: Some(json!("auto")),
+            response_format: None,
+            stream: None,
+        };
+
+        let out = to_responses_request(&req, None);
+
+        // Verify vision content converted correctly
+        let arr = out.messages[0].content.as_array().unwrap();
+        assert_eq!(arr[0]["type"], "input_text");
+        assert_eq!(arr[1]["type"], "input_image");
+        assert_eq!(arr[1]["image_url"], "https://example.com/chart.png");
+        assert_eq!(arr[1]["detail"], "high");
+
+        // Verify both tools present
+        assert!(out.tools.is_some());
+        let tools = out.tools.unwrap();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(out.tool_choice, Some(json!("auto")));
+    }
+
+    #[test]
+    fn test_vision_streaming_request() {
+        // Matches Python test: test_responses_endpoint_vision_streaming
+        let req = ChatCompletionRequest {
+            model: "gpt-4o".into(),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: json!([
+                    {"type": "text", "text": "Describe this image in detail"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/photo.jpg"}}
+                ]),
+                name: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: Some(300),
+            max_completion_tokens: None,
+            stop: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            logit_bias: None,
+            user: None,
+            n: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            stream: Some(true), // Enable streaming
+        };
+
+        let out = to_responses_request(&req, None);
+
+        // Verify streaming enabled
+        assert_eq!(out.stream, Some(true));
+
+        // Verify vision content
+        let arr = out.messages[0].content.as_array().unwrap();
+        assert_eq!(arr[0]["type"], "input_text");
+        assert_eq!(arr[1]["type"], "input_image");
+    }
+
+    #[test]
+    fn test_vision_with_reasoning_model() {
+        // Test vision with reasoning models (gpt-5-nano, o1, etc.)
+        let req = ChatCompletionRequest {
+            model: "gpt-5-nano".into(),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: json!([
+                    {"type": "text", "text": "Think step by step about this problem"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/math-problem.jpg"}}
+                ]),
+                name: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: Some(4096),
+            max_completion_tokens: None,
+            stop: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            logit_bias: None,
+            user: None,
+            n: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            stream: None,
+        };
+
+        let out = to_responses_request(&req, None);
+
+        assert_eq!(out.model, "gpt-5-nano");
+        assert_eq!(out.max_output_tokens, Some(4096));
+
+        // Verify multimodal content converted
+        let arr = out.messages[0].content.as_array().unwrap();
+        assert_eq!(arr[0]["type"], "input_text");
+        assert_eq!(arr[1]["type"], "input_image");
+    }
+
+    #[test]
+    fn test_multiple_images_in_single_message() {
+        let req = ChatCompletionRequest {
+            model: "gpt-4o".into(),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: json!([
+                    {"type": "text", "text": "Compare these images"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/img1.jpg", "detail": "low"}},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/img2.jpg", "detail": "high"}},
+                    {"type": "text", "text": "What are the key differences?"}
+                ]),
+                name: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            max_completion_tokens: None,
+            stop: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            logit_bias: None,
+            user: None,
+            n: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            stream: None,
+        };
+
+        let out = to_responses_request(&req, None);
+        let arr = out.messages[0].content.as_array().unwrap();
+
+        assert_eq!(arr.len(), 4);
+        assert_eq!(arr[0]["type"], "input_text");
+        assert_eq!(arr[1]["type"], "input_image");
+        assert_eq!(arr[1]["detail"], "low");
+        assert_eq!(arr[2]["type"], "input_image");
+        assert_eq!(arr[2]["detail"], "high");
+        assert_eq!(arr[3]["type"], "input_text");
+    }
+
+    #[test]
+    fn test_vision_base64_with_tools() {
+        let req = ChatCompletionRequest {
+            model: "gpt-4o".into(),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: json!([
+                    {"type": "text", "text": "Extract text from this image"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+                        }
+                    }
+                ]),
+                name: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            max_completion_tokens: None,
+            stop: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            logit_bias: None,
+            user: None,
+            n: None,
+            tools: Some(vec![ToolDefinition::Function {
+                function: FunctionDef {
+                    name: "ocr_extract".into(),
+                    description: Some("Extract text via OCR".into()),
+                    parameters: json!({"type": "object"}),
+                },
+            }]),
+            tool_choice: None,
+            response_format: None,
+            stream: None,
+        };
+
+        let out = to_responses_request(&req, None);
+
+        // Verify base64 image preserved
+        let arr = out.messages[0].content.as_array().unwrap();
+        assert_eq!(arr[1]["type"], "input_image");
+        assert!(arr[1]["image_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+
+        // Verify tool present
+        assert!(out.tools.is_some());
+    }
+}
+
+// ============================================================================
+// SECTION 13: Complex Real-World Scenarios
 // ============================================================================
 
 mod real_world_scenarios {

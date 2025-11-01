@@ -207,7 +207,8 @@ async fn test_convert_with_system_prompt() {
     let body_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     // Check that system prompt was injected
-    let messages = body_json["messages"].as_array().unwrap();
+    // In Responses API format, messages are under "input"
+    let messages = body_json["input"].as_array().unwrap();
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0]["role"], "system");
     assert_eq!(messages[0]["content"], "You are a helpful AI assistant");

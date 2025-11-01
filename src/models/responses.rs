@@ -19,25 +19,20 @@ pub struct ResponsesMessage {
     pub tool_call_id: Option<String>,
 }
 
-/// JSON Schema for a function tool definition (Responses API).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[skip_serializing_none]
-pub struct ResponsesToolFunction {
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    /// JSON Schema object describing the function parameters.
-    pub parameters: serde_json::Value,
-}
-
-/// Tool definition variants accepted by the Responses API.
-/// This subset focuses on "function" tools for compatibility with
-/// Chat Completions function-calling.
+/// Tool definition for Responses API.
+///
+/// The Responses API uses a flat structure where name, description, and parameters
+/// are at the same level as type, not nested under a "function" key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponsesToolDefinition {
-    Function { function: ResponsesToolFunction },
-    // Extend here with built-in tools (e.g., web_search, file_search) if needed.
+    Function {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        parameters: serde_json::Value,
+    },
+    // Extend here with built-in tools (e.g., web_search, file_search, mcp) if needed.
 }
 
 /// Minimal yet robust Responses API request model using top-level `messages`.
@@ -110,10 +105,10 @@ impl Serialize for ResponsesRequest {
         // Required: model
         root.insert("model".to_string(), Value::String(self.model.clone()));
 
-        // Place chat messages at top-level `messages`
+        // Place chat messages under `input` (Responses API format)
         let messages_val =
             serde_json::to_value(&self.messages).map_err(serde::ser::Error::custom)?;
-        root.insert("messages".to_string(), messages_val);
+        root.insert("input".to_string(), messages_val);
 
         // Helper closures
         let to_num = |f: f64, label: &str| {

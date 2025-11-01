@@ -192,11 +192,16 @@ pub fn responses_json_to_chat_request(v: &serde_json::Value) -> chat::ChatComple
         .unwrap_or_default()
         .to_string();
 
-    // Prefer top-level "messages"; fall back to "input.messages"
+    // Prefer top-level "messages" (Chat API); fall back to "input.messages" (Responses API)
     let messages_val = v
         .get("messages")
         .cloned()
-        .or_else(|| v.get("input").and_then(|i| i.get("messages")).cloned())
+        .or_else(|| {
+            v.get("input")
+                .and_then(|input| input.get("messages"))
+                .cloned()
+        })
+        .or_else(|| v.get("input").cloned()) // Also support "input" as array directly
         .unwrap_or_else(|| serde_json::Value::Array(vec![]));
 
     let mut messages: Vec<chat::ChatMessage> = Vec::new();
@@ -388,6 +393,235 @@ mod tests_responses_to_chat {
         assert_eq!(out.messages.len(), 1);
         assert_eq!(super::role_to_string(&out.messages[0].role), "user");
     }
+
+    #[test]
+    fn converts_multimodal_content() {
+        use super::map_message_content;
+
+        // Test Chat format to Responses format conversion
+        let chat_content = json!([
+            {"type": "text", "text": "Describe this image"},
+            {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg", "detail": "high"}}
+        ]);
+
+        let responses_content = map_message_content(&chat_content);
+
+        // Verify conversion
+        let arr = responses_content.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+
+        // Check text conversion
+        assert_eq!(arr[0]["type"], "input_text");
+        assert_eq!(arr[0]["text"], "Describe this image");
+
+        // Check image conversion - URL should be flattened
+        assert_eq!(arr[1]["type"], "input_image");
+        assert_eq!(arr[1]["image_url"], "https://example.com/image.jpg");
+        assert_eq!(arr[1]["detail"], "high");
+    }
+
+    #[test]
+    fn preserves_simple_text_content() {
+        use super::map_message_content;
+
+        // Simple string content should pass through unchanged
+        let content = json!("Hello world");
+        let result = map_message_content(&content);
+        assert_eq!(result, "Hello world");
+    }
+
+    #[test]
+    fn converts_base64_image() {
+        use super::map_message_content;
+
+        let chat_content = json!([
+            {"type": "text", "text": "What's in this image?"},
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+                }
+            }
+        ]);
+
+        let responses_content = map_message_content(&chat_content);
+        let arr = responses_content.as_array().unwrap();
+
+        assert_eq!(arr[0]["type"], "input_text");
+        assert_eq!(arr[1]["type"], "input_image");
+        assert!(arr[1]["image_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn converts_multiple_images() {
+        use super::map_message_content;
+
+        let chat_content = json!([
+            {"type": "text", "text": "Compare these images"},
+            {"type": "image_url", "image_url": {"url": "https://example.com/img1.jpg", "detail": "low"}},
+            {"type": "image_url", "image_url": {"url": "https://example.com/img2.jpg", "detail": "high"}},
+            {"type": "text", "text": "Which is better?"}
+        ]);
+
+        let responses_content = map_message_content(&chat_content);
+        let arr = responses_content.as_array().unwrap();
+
+        assert_eq!(arr.len(), 4);
+        assert_eq!(arr[0]["type"], "input_text");
+        assert_eq!(arr[1]["type"], "input_image");
+        assert_eq!(arr[1]["detail"], "low");
+        assert_eq!(arr[2]["type"], "input_image");
+        assert_eq!(arr[2]["detail"], "high");
+        assert_eq!(arr[3]["type"], "input_text");
+    }
+
+    #[test]
+    fn converts_image_without_detail() {
+        use super::map_message_content;
+
+        // Detail parameter is optional
+        let chat_content = json!([
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "https://example.com/image.jpg"
+                }
+            }
+        ]);
+
+        let responses_content = map_message_content(&chat_content);
+        let arr = responses_content.as_array().unwrap();
+
+        assert_eq!(arr[0]["type"], "input_image");
+        assert_eq!(arr[0]["image_url"], "https://example.com/image.jpg");
+        // detail should not be present if not in source
+        assert!(arr[0].get("detail").is_none() || arr[0]["detail"].is_null());
+    }
+
+    #[test]
+    fn preserves_unknown_content_types() {
+        use super::map_message_content;
+
+        // Unknown types should pass through unchanged
+        let chat_content = json!([
+            {"type": "custom_type", "data": "some value"}
+        ]);
+
+        let responses_content = map_message_content(&chat_content);
+        let arr = responses_content.as_array().unwrap();
+
+        assert_eq!(arr[0]["type"], "custom_type");
+        assert_eq!(arr[0]["data"], "some value");
+    }
+
+    #[test]
+    fn handles_empty_content_array() {
+        use super::map_message_content;
+
+        let chat_content = json!([]);
+        let responses_content = map_message_content(&chat_content);
+
+        assert_eq!(responses_content.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn converts_vision_with_tools_request() {
+        // Test full request conversion with both vision and tools
+        let req = chat::ChatCompletionRequest {
+            model: "gpt-4o".into(),
+            messages: vec![chat::ChatMessage {
+                role: chat::Role::User,
+                content: json!([
+                    {"type": "text", "text": "Analyze this image and use tools if needed"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/chart.png", "detail": "high"}}
+                ]),
+                name: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: Some(500),
+            max_completion_tokens: None,
+            stop: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            logit_bias: None,
+            user: None,
+            n: None,
+            tools: Some(vec![chat::ToolDefinition::Function {
+                function: chat::FunctionDef {
+                    name: "analyze_data".into(),
+                    description: Some("Analyze data from image".into()),
+                    parameters: json!({"type": "object", "properties": {}}),
+                },
+            }]),
+            tool_choice: Some(json!("auto")),
+            response_format: None,
+            stream: None,
+        };
+
+        let out = super::to_responses_request(&req, None);
+
+        // Verify messages converted correctly
+        assert_eq!(out.messages.len(), 1);
+        let content = &out.messages[0].content;
+        assert!(content.is_array());
+
+        let arr = content.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["type"], "input_text");
+        assert_eq!(arr[1]["type"], "input_image");
+        assert_eq!(arr[1]["image_url"], "https://example.com/chart.png");
+        assert_eq!(arr[1]["detail"], "high");
+
+        // Verify tools are present
+        assert!(out.tools.is_some());
+        assert_eq!(out.tool_choice, Some(json!("auto")));
+    }
+
+    #[test]
+    fn converts_reasoning_model_multimodal() {
+        // Test multimodal with reasoning models (o1, o3, gpt-5)
+        let req = chat::ChatCompletionRequest {
+            model: "o1-preview".into(),
+            messages: vec![chat::ChatMessage {
+                role: chat::Role::User,
+                content: json!([
+                    {"type": "text", "text": "Think step by step about this image"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/problem.jpg"}}
+                ]),
+                name: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            top_p: None,
+            max_tokens: Some(4096),
+            max_completion_tokens: None,
+            stop: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            logit_bias: None,
+            user: None,
+            n: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            stream: None,
+        };
+
+        let out = super::to_responses_request(&req, None);
+
+        assert_eq!(out.model, "o1-preview");
+        assert_eq!(out.max_output_tokens, Some(4096));
+
+        let content = &out.messages[0].content;
+        let arr = content.as_array().unwrap();
+        assert_eq!(arr[0]["type"], "input_text");
+        assert_eq!(arr[1]["type"], "input_image");
+    }
 }
 
 /// Convert an OpenAI Chat Completions request into a Responses API request (wrapping chat messages under `input.messages`).
@@ -453,13 +687,11 @@ pub async fn to_responses_request_with_mcp(
             let mcp_tool_definitions: Vec<resp::ResponsesToolDefinition> = mcp_tools
                 .iter()
                 .map(|tool| {
-                    // Convert MCP tool to Responses tool definition
+                    // Convert MCP tool to Responses tool definition (flat structure)
                     resp::ResponsesToolDefinition::Function {
-                        function: resp::ResponsesToolFunction {
-                            name: format!("{}_{}", tool.server_name, tool.name),
-                            description: tool.description.clone(),
-                            parameters: tool.input_schema.clone(),
-                        },
+                        name: format!("{}_{}", tool.server_name, tool.name),
+                        description: tool.description.clone(),
+                        parameters: tool.input_schema.clone(),
                     }
                 })
                 .collect();
@@ -493,13 +725,11 @@ pub async fn to_responses_request_with_mcp_and_prompt(
             let mcp_tool_definitions: Vec<resp::ResponsesToolDefinition> = mcp_tools
                 .iter()
                 .map(|tool| {
-                    // Convert MCP tool to Responses tool definition
+                    // Convert MCP tool to Responses tool definition (flat structure)
                     resp::ResponsesToolDefinition::Function {
-                        function: resp::ResponsesToolFunction {
-                            name: format!("{}_{}", tool.server_name, tool.name),
-                            description: tool.description.clone(),
-                            parameters: tool.input_schema.clone(),
-                        },
+                        name: format!("{}_{}", tool.server_name, tool.name),
+                        description: tool.description.clone(),
+                        parameters: tool.input_schema.clone(),
                     }
                 })
                 .collect();
@@ -597,11 +827,93 @@ fn map_messages(src: &[chat::ChatMessage]) -> Vec<resp::ResponsesMessage> {
     src.iter()
         .map(|m| resp::ResponsesMessage {
             role: role_to_string(&m.role).to_string(),
-            content: m.content.clone(),
+            content: map_message_content(&m.content),
             name: m.name.clone(),
             tool_call_id: m.tool_call_id.clone(),
         })
         .collect()
+}
+
+/// Convert Chat API content format to Responses API content format.
+///
+/// Chat API uses:
+/// - Simple string for text
+/// - Array with `{"type": "text", "text": "..."}` and `{"type": "image_url", "image_url": {"url": "...", "detail": "..."}}`
+///
+/// Responses API uses:
+/// - Simple string for text (unchanged)
+/// - Array with `{"type": "input_text", "text": "..."}` and `{"type": "input_image", "image_url": "...", "detail": "..."}`
+fn map_message_content(content: &serde_json::Value) -> serde_json::Value {
+    use serde_json::{Map, Value};
+
+    match content {
+        // Simple string content - pass through unchanged
+        Value::String(_) => content.clone(),
+
+        // Array content - may need transformation for multimodal
+        Value::Array(parts) => {
+            let transformed_parts: Vec<Value> = parts
+                .iter()
+                .map(|part| {
+                    if let Some(obj) = part.as_object() {
+                        let mut new_obj = Map::new();
+
+                        // Get the type field
+                        if let Some(Value::String(type_str)) = obj.get("type") {
+                            match type_str.as_str() {
+                                // Convert Chat "text" to Responses "input_text"
+                                "text" => {
+                                    new_obj.insert(
+                                        "type".to_string(),
+                                        Value::String("input_text".to_string()),
+                                    );
+                                    if let Some(text) = obj.get("text") {
+                                        new_obj.insert("text".to_string(), text.clone());
+                                    }
+                                }
+
+                                // Convert Chat "image_url" to Responses "input_image"
+                                "image_url" => {
+                                    new_obj.insert(
+                                        "type".to_string(),
+                                        Value::String("input_image".to_string()),
+                                    );
+
+                                    // Flatten the nested image_url structure
+                                    if let Some(Value::Object(image_url_obj)) = obj.get("image_url")
+                                    {
+                                        if let Some(url) = image_url_obj.get("url") {
+                                            new_obj.insert("image_url".to_string(), url.clone());
+                                        }
+                                        if let Some(detail) = image_url_obj.get("detail") {
+                                            new_obj.insert("detail".to_string(), detail.clone());
+                                        }
+                                    }
+                                }
+
+                                // Pass through other types unchanged (future compatibility)
+                                _ => {
+                                    return part.clone();
+                                }
+                            }
+                            Value::Object(new_obj)
+                        } else {
+                            // No type field - pass through unchanged
+                            part.clone()
+                        }
+                    } else {
+                        // Not an object - pass through unchanged
+                        part.clone()
+                    }
+                })
+                .collect();
+
+            Value::Array(transformed_parts)
+        }
+
+        // Other types (null, object, etc.) - pass through unchanged
+        _ => content.clone(),
+    }
 }
 
 fn role_to_string(role: &chat::Role) -> &'static str {
@@ -618,11 +930,9 @@ fn role_to_string(role: &chat::Role) -> &'static str {
 fn map_tool(t: &chat::ToolDefinition) -> resp::ResponsesToolDefinition {
     match t {
         chat::ToolDefinition::Function { function } => resp::ResponsesToolDefinition::Function {
-            function: resp::ResponsesToolFunction {
-                name: function.name.clone(),
-                description: function.description.clone(),
-                parameters: function.parameters.clone(),
-            },
+            name: function.name.clone(),
+            description: function.description.clone(),
+            parameters: function.parameters.clone(),
         },
     }
 }
@@ -745,9 +1055,12 @@ mod tests {
         let tools = out.tools.unwrap();
         assert_eq!(tools.len(), 1);
         #[allow(irrefutable_let_patterns)]
-        if let resp::ResponsesToolDefinition::Function { function } = &tools[0] {
-            assert_eq!(function.name, "lookup");
-            assert!(function.description.as_deref() == Some("Lookup a value"));
+        if let resp::ResponsesToolDefinition::Function {
+            name, description, ..
+        } = &tools[0]
+        {
+            assert_eq!(name, "lookup");
+            assert!(description.as_deref() == Some("Lookup a value"));
         } else {
             panic!("expected function tool");
         }

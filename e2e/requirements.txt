@@ -1,8 +1,0 @@
-# Requirements for Chat2Response Python end-to-end tests
-# These tests spawn the Rust HTTP server via `cargo run` and exercise /convert and /proxy.
-# Install with: python -m pip install -r requirements.txt
-
-pytest>=7.4,<9
-pytest-timeout>=2.3,<3
-requests>=2.31,<3
-openai>=1.0,<2

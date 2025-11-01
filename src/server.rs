@@ -29,8 +29,8 @@ async fn responses_passthrough(
     let model = body.get("model").and_then(|v| v.as_str());
 
     if let Some(prompt) = system_prompt_guard.get_prompt(model, Some("responses")) {
-        // Inject system prompt into messages
-        if let Some(messages) = body.get_mut("messages").and_then(|v| v.as_array_mut()) {
+        // Inject system prompt into messages (Responses API uses "input" not "messages")
+        if let Some(messages) = body.get_mut("input").and_then(|v| v.as_array_mut()) {
             let system_msg = serde_json::json!({
                 "role": "system",
                 "content": prompt
@@ -59,6 +59,36 @@ async fn responses_passthrough(
         }
     }
     drop(system_prompt_guard);
+
+    // Convert Chat API-formatted tools to Responses API flat format
+    // The Python SDK sends tools in Chat API format (nested function object),
+    // but OpenAI Responses API expects flat format (name/description/parameters at top level)
+    if let Some(tools) = body.get_mut("tools").and_then(|t| t.as_array_mut()) {
+        for tool in tools.iter_mut() {
+            if let Some(obj) = tool.as_object_mut() {
+                // Check if it's Chat API format: {"type": "function", "function": {...}}
+                if let Some(function) = obj.get("function").and_then(|f| f.as_object()) {
+                    // Extract all fields from nested function object first (before mutating obj)
+                    let name = function.get("name").cloned();
+                    let desc = function.get("description").cloned();
+                    let params = function.get("parameters").cloned();
+
+                    // Now insert into the top level
+                    if let Some(n) = name {
+                        obj.insert("name".to_string(), n);
+                    }
+                    if let Some(d) = desc {
+                        obj.insert("description".to_string(), d);
+                    }
+                    if let Some(p) = params {
+                        obj.insert("parameters".to_string(), p);
+                    }
+                    // Remove the nested function object
+                    obj.remove("function");
+                }
+            }
+        }
+    }
 
     // Determine managed (internal upstream key) vs passthrough mode
     let env_api_key = std::env::var("OPENAI_API_KEY")

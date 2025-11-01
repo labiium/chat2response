@@ -16,6 +16,4 @@ pub mod responses;
 pub use chat::{
     ChatCompletionRequest, ChatMessage, FunctionDef, ResponseFormat, Role, ToolDefinition,
 };
-pub use responses::{
-    ResponsesMessage, ResponsesRequest, ResponsesToolDefinition, ResponsesToolFunction,
-};
+pub use responses::{ResponsesMessage, ResponsesRequest, ResponsesToolDefinition};
