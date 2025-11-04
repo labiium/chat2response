@@ -1986,14 +1986,12 @@ mod specification_compliance {
     /// Test that messages array is preserved in order
     #[test]
     fn test_message_order_preservation() {
-        let messages = vec![
-            ("system", "You are helpful"),
+        let messages = [("system", "You are helpful"),
             ("user", "First question"),
             ("assistant", "First answer"),
             ("user", "Second question"),
             ("assistant", "Second answer"),
-            ("user", "Third question"),
-        ];
+            ("user", "Third question")];
 
         let chat_messages: Vec<ChatMessage> = messages
             .iter()
