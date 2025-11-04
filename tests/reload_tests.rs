@@ -100,8 +100,10 @@ async fn test_reload_system_prompt_with_valid_config() {
 
     std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
-    let mut app_state = AppState::default();
-    app_state.system_prompt_config_path = Some(config_path.to_string_lossy().to_string());
+    let app_state = AppState {
+        system_prompt_config_path: Some(config_path.to_string_lossy().to_string()),
+        ..Default::default()
+    };
 
     let app = test::init_service(
         App::new()
@@ -136,8 +138,10 @@ async fn test_reload_system_prompt_with_invalid_config() {
 
     std::fs::write(&config_path, "{ invalid json }").unwrap();
 
-    let mut app_state = AppState::default();
-    app_state.system_prompt_config_path = Some(config_path.to_string_lossy().to_string());
+    let app_state = AppState {
+        system_prompt_config_path: Some(config_path.to_string_lossy().to_string()),
+        ..Default::default()
+    };
 
     let app = test::init_service(
         App::new()
@@ -170,8 +174,10 @@ async fn test_convert_with_system_prompt() {
 
     std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
-    let mut app_state = AppState::default();
-    app_state.system_prompt_config_path = Some(config_path.to_string_lossy().to_string());
+    let mut app_state = AppState {
+        system_prompt_config_path: Some(config_path.to_string_lossy().to_string()),
+        ..Default::default()
+    };
 
     // Load the config
     let loaded_config =
