@@ -1,0 +1,66 @@
+{
+  "labiium-001": {
+    "base_url": "https://api.openai.com/v1",
+    "mode": "responses",
+    "model_id": "gpt-4o-mini-2024-07-18",
+    "auth_env": "OPENAI_API_KEY"
+  },
+  "labiium-fast": {
+    "base_url": "https://api.openai.com/v1",
+    "mode": "responses",
+    "model_id": "gpt-3.5-turbo",
+    "auth_env": "OPENAI_API_KEY"
+  },
+  "labiium-smart": {
+    "base_url": "https://api.openai.com/v1",
+    "mode": "responses",
+    "model_id": "gpt-4o",
+    "auth_env": "OPENAI_API_KEY"
+  },
+  "labiium-reasoning": {
+    "base_url": "https://api.openai.com/v1",
+    "mode": "responses",
+    "model_id": "o1-preview",
+    "auth_env": "OPENAI_API_KEY"
+  },
+  "labiium-local": {
+    "base_url": "http://localhost:11434/v1",
+    "mode": "chat",
+    "model_id": "llama3.1-8b-instruct"
+  },
+  "labiium-vllm": {
+    "base_url": "http://localhost:8000/v1",
+    "mode": "chat",
+    "model_id": "meta-llama/Llama-3.1-70B-Instruct"
+  },
+  "labiium-claude": {
+    "base_url": "https://api.anthropic.com/v1",
+    "mode": "responses",
+    "model_id": "claude-3-5-sonnet-20241022",
+    "auth_env": "ANTHROPIC_API_KEY"
+  },
+  "labiium-groq": {
+    "base_url": "https://api.groq.com/openai/v1",
+    "mode": "chat",
+    "model_id": "llama-3.1-70b-versatile",
+    "auth_env": "GROQ_API_KEY"
+  },
+  "edu-hint": {
+    "base_url": "https://api.openai.com/v1",
+    "mode": "responses",
+    "model_id": "gpt-4o-mini",
+    "auth_env": "OPENAI_API_KEY"
+  },
+  "edu-solution": {
+    "base_url": "https://api.openai.com/v1",
+    "mode": "responses",
+    "model_id": "gpt-4o",
+    "auth_env": "OPENAI_API_KEY"
+  },
+  "edu-feedback": {
+    "base_url": "https://api.openai.com/v1",
+    "mode": "responses",
+    "model_id": "gpt-4o-mini",
+    "auth_env": "OPENAI_API_KEY"
+  }
+}

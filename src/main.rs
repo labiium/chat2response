@@ -51,6 +51,20 @@ async fn main() -> std::io::Result<()> {
         .and_then(|a| a.strip_prefix("--system-prompt-config="))
         .map(|s| s.to_string());
 
+    // Check for --routing-config flag
+    let routing_config_arg = args
+        .iter()
+        .find(|a| a.starts_with("--routing-config="))
+        .and_then(|a| a.strip_prefix("--routing-config="))
+        .map(|s| s.to_string());
+
+    // Check for --router-config flag (alias map for Router)
+    let router_config_arg = args
+        .iter()
+        .find(|a| a.starts_with("--router-config="))
+        .and_then(|a| a.strip_prefix("--router-config="))
+        .map(|s| s.to_string());
+
     let (mcp_manager_arc, mcp_config_path) = if let Some(mcp_config_path) = mcp_config_arg.clone() {
         tracing::info!("Loading MCP configuration from: {}", mcp_config_path);
         match McpConfig::load_from_file(&mcp_config_path) {
@@ -80,7 +94,7 @@ async fn main() -> std::io::Result<()> {
     } else {
         tracing::info!("No MCP config provided, running without MCP support");
         tracing::info!(
-                "Usage: {} [mcp.json] [--keys-backend=redis://...|sled:<path>|memory] [--system-prompt-config=system_prompt.json]",
+                "Usage: {} [mcp.json] [--keys-backend=redis://...|sled:<path>|memory] [--system-prompt-config=system_prompt.json] [--routing-config=routing.json]",
                 args[0]
             );
         (None, None)
@@ -125,6 +139,98 @@ async fn main() -> std::io::Result<()> {
                 )),
                 None,
             )
+        };
+
+    // Load routing configuration if provided
+    let (routing_config, routing_config_path) =
+        if let Some(routing_path) = routing_config_arg.clone() {
+            tracing::info!("Loading routing configuration from: {}", routing_path);
+            match chat2response::routing_config::RoutingConfig::load_from_file(&routing_path) {
+                Ok(config) => {
+                    tracing::info!(
+                        "Routing configuration loaded ({} rules, {} aliases)",
+                        config.rules.len(),
+                        config.aliases.len()
+                    );
+                    (
+                        Arc::new(tokio::sync::RwLock::new(config)),
+                        Some(routing_path),
+                    )
+                }
+                Err(e) => {
+                    tracing::error!("Failed to load routing config: {}", e);
+                    tracing::warn!("Continuing with empty routing config");
+                    (
+                        Arc::new(tokio::sync::RwLock::new(
+                            chat2response::routing_config::RoutingConfig::empty(),
+                        )),
+                        None,
+                    )
+                }
+            }
+        } else {
+            tracing::info!("No routing config provided, using legacy CHAT2RESPONSE_BACKENDS");
+            (
+                Arc::new(tokio::sync::RwLock::new(
+                    chat2response::routing_config::RoutingConfig::empty(),
+                )),
+                None,
+            )
+        };
+
+    // Load router configuration if provided
+    let router_client: Option<Arc<dyn chat2response::router_client::RouterClient>> =
+        if let Some(router_path) = router_config_arg.clone() {
+            tracing::info!("Loading router configuration from: {}", router_path);
+            match chat2response::router_client::LocalPolicyRouter::from_file(&router_path) {
+                Ok(router) => {
+                    tracing::info!("Router configuration loaded (local policy)");
+                    Some(Arc::new(router))
+                }
+                Err(e) => {
+                    tracing::error!("Failed to load router config: {}", e);
+                    tracing::warn!("Continuing without router");
+                    None
+                }
+            }
+        } else if let Ok(router_url) = env::var("CHAT2R_ROUTER_URL") {
+            tracing::info!("Connecting to remote router: {}", router_url);
+            let timeout_ms = env::var("CHAT2R_ROUTER_TIMEOUT_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(15);
+
+            let config = chat2response::router_client::HttpRouterConfig {
+                url: router_url,
+                timeout_ms,
+                mtls: env::var("CHAT2R_ROUTER_MTLS").is_ok(),
+                client: None,
+            };
+
+            match chat2response::router_client::HttpRouterClient::new(config) {
+                Ok(client) => {
+                    tracing::info!("Connected to remote router");
+                    // Wrap with cache
+                    let cache_ttl = env::var("CHAT2R_CACHE_TTL_MS")
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(15000);
+                    Some(Arc::new(
+                        chat2response::router_client::CachedRouterClient::new(
+                            Box::new(client),
+                            cache_ttl,
+                        ),
+                    ))
+                }
+                Err(e) => {
+                    tracing::error!("Failed to connect to router: {}", e);
+                    tracing::warn!("Continuing without router");
+                    None
+                }
+            }
+        } else {
+            tracing::info!("No router configured");
+            None
         };
 
     // Initialize analytics manager
@@ -173,6 +279,9 @@ async fn main() -> std::io::Result<()> {
         pricing,
         mcp_config_path,
         system_prompt_config_path,
+        routing_config,
+        routing_config_path,
+        router_client,
     };
 
     // Startup mode announcement (managed vs passthrough)

@@ -27,6 +27,8 @@ pub mod mcp_client;
 pub mod mcp_config;
 pub mod models;
 pub mod pricing;
+pub mod router_client;
+pub mod routing_config;
 pub mod server;
 pub mod system_prompt_config;
 pub mod util;
@@ -35,6 +37,16 @@ pub mod util;
 pub use crate::analytics::{AnalyticsEvent, AnalyticsManager, CostInfo, TokenUsage};
 pub use crate::auth::{ApiKeyInfo, ApiKeyManager, GeneratedKey, Verification};
 pub use crate::pricing::{ModelPricing, PricingConfig};
+pub use crate::router_client::{
+    CachedRouterClient, FallbackConfig, HttpRouterClient, HttpRouterConfig, LocalPolicyRouter,
+    LocalRouter, PrivacyTier, RouteError, RouteFeedback, RouteHints, RouteLimits, RoutePlan,
+    RouteRequest, RouterCache, RouterClient, RouterMode, UpstreamConfig,
+    UpstreamMode as RouterUpstreamMode,
+};
+pub use crate::routing_config::{
+    BackendConfig, LoadBalanceStrategy, MatchStrategy, ModelAlias, RequestTransform, ResolvedRoute,
+    RoutingConfig, RoutingRule, RoutingStats, UpstreamMode as RoutingUpstreamMode,
+};
 
 pub use crate::conversion::{
     chat_to_responses_response, responses_chunk_to_chat_chunk, responses_to_chat_response,

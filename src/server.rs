@@ -297,6 +297,7 @@ pub fn config_routes(cfg: &mut web::ServiceConfig) {
                 "/reload/system_prompt",
                 web::post().to(reload_system_prompt),
             )
+            .route("/reload/routing", web::post().to(reload_routing))
             .route("/reload/all", web::post().to(reload_all))
             .route("/analytics/stats", web::get().to(analytics_stats))
             .route("/analytics/events", web::get().to(analytics_events))
@@ -320,6 +321,7 @@ async fn status(state: web::Data<AppState>) -> impl Responder {
         "/keys/set_expiration",
         "/reload/mcp",
         "/reload/system_prompt",
+        "/reload/routing",
         "/reload/all",
         "/analytics/stats",
         "/analytics/events",
@@ -332,10 +334,16 @@ async fn status(state: web::Data<AppState>) -> impl Responder {
     let mcp_enabled = state.mcp_manager.is_some();
     let mcp_config_path = state.mcp_config_path.as_deref();
     let system_prompt_config_path = state.system_prompt_config_path.as_deref();
+    let routing_config_path = state.routing_config_path.as_deref();
 
     let system_prompt_guard = state.system_prompt_config.read().await;
     let system_prompt_enabled = system_prompt_guard.enabled;
     drop(system_prompt_guard);
+
+    // Get routing status
+    let routing_guard = state.routing_config.read().await;
+    let routing_stats = routing_guard.stats();
+    drop(routing_guard);
 
     // Get analytics status
     let analytics_enabled = state.analytics.is_some();
@@ -360,6 +368,12 @@ async fn status(state: web::Data<AppState>) -> impl Responder {
                 "enabled": system_prompt_enabled,
                 "config_path": system_prompt_config_path,
                 "reloadable": system_prompt_config_path.is_some()
+            },
+            "routing": {
+                "enabled": routing_config_path.is_some(),
+                "config_path": routing_config_path,
+                "reloadable": routing_config_path.is_some(),
+                "stats": routing_stats
             },
             "analytics": {
                 "enabled": analytics_enabled,
@@ -893,11 +907,53 @@ async fn reload_system_prompt(state: web::Data<AppState>) -> impl Responder {
     }))
 }
 
+/// Reload routing configuration from file at runtime
+async fn reload_routing(state: web::Data<AppState>) -> impl Responder {
+    let config_path = match &state.routing_config_path {
+        Some(path) => path.clone(),
+        None => {
+            return error_response(
+                http::StatusCode::BAD_REQUEST,
+                "No routing config path configured - cannot reload",
+            );
+        }
+    };
+
+    tracing::info!("Reloading routing configuration from: {}", config_path);
+
+    // Load new config
+    let config = match crate::routing_config::RoutingConfig::load_from_file(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Failed to load routing config: {}", e);
+            return error_response(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to load routing config: {}", e),
+            );
+        }
+    };
+
+    // Replace the config
+    let mut config_guard = state.routing_config.write().await;
+    *config_guard = config.clone();
+
+    tracing::info!("Routing configuration reloaded successfully");
+
+    let stats = config.stats();
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "success": true,
+        "message": "Routing configuration reloaded",
+        "stats": stats
+    }))
+}
+
 /// Reload both MCP and system prompt configurations
 async fn reload_all(state: web::Data<AppState>) -> impl Responder {
     let mut results = serde_json::json!({
         "mcp": { "success": false, "message": "Not attempted" },
-        "system_prompt": { "success": false, "message": "Not attempted" }
+        "system_prompt": { "success": false, "message": "Not attempted" },
+        "routing": { "success": false, "message": "Not attempted" }
     });
 
     // Reload MCP if path is configured
@@ -989,6 +1045,34 @@ async fn reload_all(state: web::Data<AppState>) -> impl Responder {
             "success": false,
             "message": "No system prompt config path configured"
         });
+    }
+
+    // Reload routing if path is configured
+    if let Some(routing_path) = &state.routing_config_path {
+        tracing::info!("Reloading routing configuration from: {}", routing_path);
+
+        match crate::routing_config::RoutingConfig::load_from_file(routing_path) {
+            Ok(config) => {
+                let mut config_guard = state.routing_config.write().await;
+                *config_guard = config.clone();
+                let stats = config.stats();
+
+                results["routing"] = serde_json::json!({
+                    "success": true,
+                    "message": "Routing configuration reloaded",
+                    "stats": stats
+                });
+
+                tracing::info!("Routing configuration reloaded successfully");
+            }
+            Err(e) => {
+                results["routing"] = serde_json::json!({
+                    "success": false,
+                    "message": format!("Failed to reload routing config: {}", e)
+                });
+                tracing::error!("Failed to reload routing config: {}", e);
+            }
+        }
     }
 
     HttpResponse::Ok().json(results)

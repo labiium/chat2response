@@ -1,0 +1,282 @@
+{
+  "aliases": [
+    {
+      "alias": "my-gpt4",
+      "target": "gpt-4-turbo-preview",
+      "description": "Custom alias for GPT-4 Turbo",
+      "enabled": true
+    },
+    {
+      "alias": "fast-model",
+      "target": "gpt-3.5-turbo",
+      "description": "Fast model for simple tasks",
+      "enabled": true
+    },
+    {
+      "alias": "smart-model",
+      "target": "gpt-4o",
+      "description": "Smart model for complex reasoning",
+      "enabled": true
+    },
+    {
+      "alias": "local-llama",
+      "target": "llama-3.1-70b",
+      "description": "Local Llama model via Ollama",
+      "enabled": true
+    }
+  ],
+  "rules": [
+    {
+      "id": "openai-gpt4-exact",
+      "description": "Route specific GPT-4 model to OpenAI",
+      "match_strategy": {
+        "exact": {
+          "model": "gpt-4-turbo-preview"
+        }
+      },
+      "backends": [
+        {
+          "base_url": "https://api.openai.com/v1",
+          "key_env": "OPENAI_API_KEY",
+          "mode": "responses",
+          "weight": 1
+        }
+      ],
+      "load_balance": "first",
+      "priority": 100,
+      "enabled": true
+    },
+    {
+      "id": "openai-gpt-prefix",
+      "description": "Route all gpt-* models to OpenAI",
+      "match_strategy": {
+        "prefix": {
+          "prefix": "gpt-"
+        }
+      },
+      "backends": [
+        {
+          "base_url": "https://api.openai.com/v1",
+          "key_env": "OPENAI_API_KEY",
+          "mode": "responses",
+          "weight": 1
+        }
+      ],
+      "load_balance": "first",
+      "priority": 50,
+      "enabled": true
+    },
+    {
+      "id": "anthropic-claude",
+      "description": "Route Claude models to Anthropic",
+      "match_strategy": {
+        "prefix": {
+          "prefix": "claude-"
+        }
+      },
+      "backends": [
+        {
+          "base_url": "https://api.anthropic.com/v1",
+          "key_env": "ANTHROPIC_API_KEY",
+          "mode": "responses",
+          "weight": 1
+        }
+      ],
+      "load_balance": "first",
+      "priority": 50,
+      "enabled": true
+    },
+    {
+      "id": "local-llama-glob",
+      "description": "Route Llama models to local Ollama instance",
+      "match_strategy": {
+        "glob": {
+          "pattern": "llama*"
+        }
+      },
+      "backends": [
+        {
+          "base_url": "http://localhost:11434/v1",
+          "mode": "chat",
+          "weight": 1
+        }
+      ],
+      "load_balance": "first",
+      "priority": 60,
+      "transform": {
+        "override_temperature": 0.7
+      },
+      "enabled": true
+    },
+    {
+      "id": "vllm-local-models",
+      "description": "Route local-* prefix to vLLM server",
+      "match_strategy": {
+        "prefix": {
+          "prefix": "local-"
+        }
+      },
+      "backends": [
+        {
+          "base_url": "http://localhost:8000/v1",
+          "mode": "chat",
+          "weight": 1,
+          "timeout_seconds": 300
+        }
+      ],
+      "load_balance": "first",
+      "priority": 70,
+      "transform": {
+        "remove_parameters": ["reasoning_effort"]
+      },
+      "enabled": true
+    },
+    {
+      "id": "azure-openai",
+      "description": "Route azure-* models to Azure OpenAI",
+      "match_strategy": {
+        "prefix": {
+          "prefix": "azure-"
+        }
+      },
+      "backends": [
+        {
+          "base_url": "https://YOUR-RESOURCE.openai.azure.com/openai/deployments/YOUR-DEPLOYMENT",
+          "key_env": "AZURE_OPENAI_KEY",
+          "mode": "chat",
+          "weight": 1
+        }
+      ],
+      "load_balance": "first",
+      "priority": 80,
+      "transform": {
+        "rewrite_model": "gpt-4"
+      },
+      "enabled": false
+    },
+    {
+      "id": "regex-experimental",
+      "description": "Route experimental models matching pattern",
+      "match_strategy": {
+        "regex": {
+          "pattern": "^(exp|test|dev)-.*"
+        }
+      },
+      "backends": [
+        {
+          "base_url": "http://localhost:5000/v1",
+          "mode": "chat",
+          "weight": 1
+        }
+      ],
+      "load_balance": "first",
+      "priority": 90,
+      "enabled": false
+    },
+    {
+      "id": "load-balanced-backends",
+      "description": "Round-robin load balancing across multiple backends",
+      "match_strategy": {
+        "prefix": {
+          "prefix": "balanced-"
+        }
+      },
+      "backends": [
+        {
+          "base_url": "https://api.openai.com/v1",
+          "key_env": "OPENAI_API_KEY",
+          "mode": "responses",
+          "weight": 1
+        },
+        {
+          "base_url": "https://api.groq.com/openai/v1",
+          "key_env": "GROQ_API_KEY",
+          "mode": "chat",
+          "weight": 1
+        }
+      ],
+      "load_balance": "round_robin",
+      "priority": 40,
+      "transform": {
+        "rewrite_model": "llama-3.1-70b-versatile"
+      },
+      "enabled": false
+    },
+    {
+      "id": "weighted-load-balance",
+      "description": "Weighted random selection (70% primary, 30% fallback)",
+      "match_strategy": {
+        "prefix": {
+          "prefix": "weighted-"
+        }
+      },
+      "backends": [
+        {
+          "base_url": "https://api.openai.com/v1",
+          "key_env": "OPENAI_API_KEY",
+          "mode": "responses",
+          "weight": 70
+        },
+        {
+          "base_url": "http://localhost:11434/v1",
+          "mode": "chat",
+          "weight": 30
+        }
+      ],
+      "load_balance": "weighted",
+      "priority": 45,
+      "enabled": false
+    },
+    {
+      "id": "transform-example",
+      "description": "Example with comprehensive transformations",
+      "match_strategy": {
+        "exact": {
+          "model": "custom-model"
+        }
+      },
+      "backends": [
+        {
+          "base_url": "http://localhost:8000/v1",
+          "mode": "chat",
+          "weight": 1
+        }
+      ],
+      "load_balance": "first",
+      "priority": 95,
+      "transform": {
+        "rewrite_model": "llama-3.1-8b-instruct",
+        "add_parameters": {
+          "top_p": 0.9,
+          "frequency_penalty": 0.5
+        },
+        "remove_parameters": ["reasoning_effort", "store"],
+        "override_temperature": 0.8,
+        "override_max_tokens": 2048
+      },
+      "enabled": false
+    },
+    {
+      "id": "catch-all-fallback",
+      "description": "Fallback rule for any unmatched model (lowest priority)",
+      "match_strategy": "any",
+      "backends": [
+        {
+          "base_url": "https://api.openai.com/v1",
+          "key_env": "OPENAI_API_KEY",
+          "mode": "responses",
+          "weight": 1
+        }
+      ],
+      "load_balance": "first",
+      "priority": 0,
+      "enabled": false
+    }
+  ],
+  "default_backend": {
+    "base_url": "https://api.openai.com/v1",
+    "key_env": "OPENAI_API_KEY",
+    "mode": "responses"
+  },
+  "allow_passthrough": true
+}

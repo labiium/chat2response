@@ -153,6 +153,12 @@ pub struct AppState {
     pub mcp_config_path: Option<String>,
     /// Path to system prompt config file for reload operations
     pub system_prompt_config_path: Option<String>,
+    /// Routing configuration with runtime reload support
+    pub routing_config: std::sync::Arc<tokio::sync::RwLock<crate::routing_config::RoutingConfig>>,
+    /// Path to routing config file for reload operations
+    pub routing_config_path: Option<String>,
+    /// Router client for model routing decisions
+    pub router_client: Option<std::sync::Arc<dyn crate::router_client::RouterClient>>,
 }
 
 /// Build an HTTP client honoring proxy and timeout environment variables.
@@ -244,6 +250,11 @@ impl Default for AppState {
             pricing: std::sync::Arc::new(crate::pricing::PricingConfig::default()),
             mcp_config_path: None,
             system_prompt_config_path: None,
+            routing_config: std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::routing_config::RoutingConfig::empty(),
+            )),
+            routing_config_path: None,
+            router_client: None,
         }
     }
 }
@@ -276,10 +287,16 @@ impl AppState {
             pricing: std::sync::Arc::new(crate::pricing::PricingConfig::default()),
             mcp_config_path: None,
             system_prompt_config_path: None,
+            routing_config: std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::routing_config::RoutingConfig::empty(),
+            )),
+            routing_config_path: None,
+            router_client: None,
         }
     }
 
     /// Create AppState with MCP manager wrapped in Arc
+    /// Create AppState with MCP manager Arc
     pub fn with_mcp_manager_arc(
         mcp_manager: std::sync::Arc<tokio::sync::RwLock<crate::mcp_client::McpClientManager>>,
     ) -> Self {
@@ -308,6 +325,11 @@ impl AppState {
             pricing: std::sync::Arc::new(crate::pricing::PricingConfig::default()),
             mcp_config_path: None,
             system_prompt_config_path: None,
+            routing_config: std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::routing_config::RoutingConfig::empty(),
+            )),
+            routing_config_path: None,
+            router_client: None,
         }
     }
     /// Read the OpenAI API key from environment if present. Optional for /proxy.
