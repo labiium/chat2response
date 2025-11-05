@@ -48,6 +48,7 @@ Notes:
 - When mode=chat for a rule, the server automatically converts Responses-shaped payloads to Chat Completions for that upstream and calls /v1/chat/completions.
 - Managed auth: when OPENAI_API_KEY is set and you use generated access tokens, the routing layer picks the correct provider key via key_env per rule, so clients never see provider secrets.
 - Passthrough auth: if you don’t run managed auth, the client Bearer is forwarded unless a provider-specific key_env is configured and no client Bearer is provided.
+- Legacy routing: `CHAT2RESPONSE_BACKENDS` remains supported, but new deployments should prefer the schema 1.1 Router integration described below for richer policy control.
 1) `--keys-backend=...` (CLI)
 2) `CHAT2RESPONSE_REDIS_URL` (if set, Redis is used)
 3) `sled` (embedded; used when no Redis URL is provided)
@@ -79,6 +80,33 @@ chat2response --keys-backend=memory
 CHAT2RESPONSE_REDIS_URL=redis://127.0.0.1/ chat2response
 ```
 
+## Router integration (Schema 1.1)
+
+Chat2Response now supports a first-class Router interface for virtual model aliases, stickiness, and policy-driven routing. You can run in three modes:
+
+- **Local**: load a static alias map via `--router-config=router_aliases.json` (see [`router_aliases.json.example`](router_aliases.json.example)).
+- **Remote**: point to a Router service with `CHAT2R_ROUTER_URL` / `CHAT2R_ROUTER_MODE=remote` and follow the v1.1 contract described in [`ROUTER_API_SPEC.md`](ROUTER_API_SPEC.md).
+- **Hybrid**: combine local aliases with a remote Router (`CHAT2R_ROUTER_MODE=hybrid`) for low-latency fallbacks.
+
+Key environment variables:
+
+```bash
+CHAT2R_ROUTER_MODE=local|remote|hybrid
+CHAT2R_ROUTER_URL=https://router.internal           # remote/hybrid
+CHAT2R_ROUTER_TIMEOUT_MS=15                         # request budget to router
+CHAT2R_CACHE_TTL_MS=15000                           # plan cache TTL (ms)
+CHAT2R_EXPOSE_ROUTE_HEADERS=1                      # surface X-Route-* headers to clients
+```
+
+The Router contract uses schema version **1.1**:
+
+- Every request/response includes `schema_version`.
+- Costs are expressed in micro-units (`est_cost_micro`, `actual_cost_micro`).
+- Plans deliver stickiness tokens (`stickiness.plan_token`) and cache semantics (`cache.valid_until`, `cache.freeze_key`).
+- Observability headers (`Router-Schema`, `X-Route-Cache`, `X-Content-Used`, etc.) keep analytics aligned.
+
+For Router implementers, start with [`ROUTER_API_SPEC.md`](ROUTER_API_SPEC.md) and the reference server in [`examples/router_service.rs`](examples/router_service.rs). If you need fine-grained on-box routing logic instead, the legacy JSON routing config is still available via [`routing.json.example`](routing.json.example) and `--routing-config`.
+
 ## Why Use This?
 
 - Easy migration: keep your Chat Completions code, get Responses API benefits
@@ -106,6 +134,15 @@ OPENAI_API_KEY=sk-your-key chat2response
 
 # Start with MCP integration
 OPENAI_API_KEY=sk-your-key chat2response mcp.json
+
+# Start with local router aliases
+OPENAI_API_KEY=sk-your-key chat2response --router-config=router_aliases.json.example
+
+# Start with remote router (schema 1.1)
+CHAT2R_ROUTER_URL=https://router.internal \
+CHAT2R_ROUTER_MODE=remote \
+OPENAI_API_KEY=sk-your-key \
+chat2response
 ```
 
 Server runs at `http://localhost:8088`.
@@ -210,6 +247,12 @@ curl -N http://localhost:8088/v1/chat/completions \
   -H "Authorization: Bearer sk-your-key" \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Stream this"}],"stream":true}'
 ```
+
+### Policy-aware routing
+- Local alias files (`--router-config`) and remote Routers (schema 1.1)
+- Stickiness tokens, cache TTLs, and freeze keys for deterministic routing
+- Micro-unit cost hints and tier metadata surfaced via `X-Route-*` headers
+- Reference spec: [`ROUTER_API_SPEC.md`](ROUTER_API_SPEC.md)
 
 ### Library Usage
 Use as a Rust library for in-process conversion:
