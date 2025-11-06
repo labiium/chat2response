@@ -1,0 +1,14 @@
+{
+  "nano-basic": {
+    "base_url": "https://api.openai.com/v1",
+    "mode": "responses",
+    "model_id": "gpt-5-nano",
+    "auth_env": "OPENAI_API_KEY"
+  },
+  "nano-advanced": {
+    "base_url": "https://api.openai.com/v1",
+    "mode": "responses",
+    "model_id": "gpt-4.1-nano",
+    "auth_env": "OPENAI_API_KEY"
+  }
+}

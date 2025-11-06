@@ -122,7 +122,7 @@ pub async fn spawn_test_app(managed_mode: bool, custom_env: &[(&str, &str)]) -> 
     }
 
     // Build app state via existing builder.
-    let app = chat2response::server::build_router();
+    let app = routiium::server::build_router();
 
     // Bind ephemeral.
     let listener = TcpListener::bind("127.0.0.1:0")

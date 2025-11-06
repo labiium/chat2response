@@ -1,6 +1,6 @@
 # Responses API Testing Guide
 
-Comprehensive testing methodology for the `/v1/responses` endpoint in chat2response.
+Comprehensive testing methodology for the `/v1/responses` endpoint in routiium.
 
 ## Overview
 
@@ -35,7 +35,7 @@ print(response.usage.input_tokens)  # Token usage
          │ { "model": "...", "messages": [...] }
          ▼
 ┌─────────────────────────┐
-│  chat2response Server   │
+│  routiium Server   │
 │  Port 8099              │
 └────────┬────────────────┘
          │ Forward to OpenAI
@@ -257,7 +257,7 @@ cd python_tests
 ./setup_and_test.sh  # Full setup + all tests
 
 # Or just Responses API tests:
-pytest tests/test_chat2response_integration.py::TestResponsesAPI -v -s
+pytest tests/test_routiium_integration.py::TestResponsesAPI -v -s
 ```
 
 ### Run Specific Test
@@ -269,7 +269,7 @@ pytest tests/ -k test_basic_responses_endpoint -v -s
 ### Run with Debugging
 
 ```bash
-pytest tests/test_chat2response_integration.py::TestResponsesAPI -v -s --tb=long
+pytest tests/test_routiium_integration.py::TestResponsesAPI -v -s --tb=long
 ```
 
 ### Run Only Non-Streaming Tests
@@ -289,7 +289,7 @@ openai.APIConnectionError: Connection refused
 
 **Solution:**
 ```bash
-# Ensure chat2response server is running
+# Ensure routiium server is running
 curl http://127.0.0.1:8099/status
 
 # If not running, start it
@@ -338,7 +338,7 @@ AssertionError: Response should have output_text
 **Solution:**
 - Verify OpenAI SDK version >= 2.0.0 with Responses API support
 - Check if backend is actually OpenAI-compatible
-- Verify `CHAT2RESPONSE_BACKENDS` configuration
+- Verify `ROUTIIUM_BACKENDS` configuration
 - Check server logs for upstream errors
 
 ## Advanced Testing Scenarios
@@ -351,8 +351,8 @@ AssertionError: Response should have output_text
     "gpt-4o",
     "gpt-4-turbo-preview",
 ])
-def test_responses_multiple_models(chat2response_client, model):
-    response = chat2response_client.responses.create(
+def test_responses_multiple_models(routiium_client, model):
+    response = routiium_client.responses.create(
         model=model,
         messages=[{"role": "user", "content": "Hello"}],
     )
@@ -361,15 +361,15 @@ def test_responses_multiple_models(chat2response_client, model):
 
 ### Testing Multi-Backend Routing
 
-If `CHAT2RESPONSE_BACKENDS` is configured:
+If `ROUTIIUM_BACKENDS` is configured:
 
 ```bash
-export CHAT2RESPONSE_BACKENDS="gpt*=https://api.openai.com/v1,mode=responses,key=OPENAI_API_KEY"
+export ROUTIIUM_BACKENDS="gpt*=https://api.openai.com/v1,mode=responses,key=OPENAI_API_KEY"
 ```
 
 ```python
-def test_responses_backend_routing(chat2response_client):
-    response = chat2response_client.responses.create(
+def test_responses_backend_routing(routiium_client):
+    response = routiium_client.responses.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": "Test"}],
     )
@@ -381,9 +381,9 @@ def test_responses_backend_routing(chat2response_client):
 If system prompts are configured:
 
 ```python
-def test_responses_with_injected_system_prompt(chat2response_client, test_model):
+def test_responses_with_injected_system_prompt(routiium_client, test_model):
     """Test that system prompt injection doesn't break requests."""
-    response = chat2response_client.responses.create(
+    response = routiium_client.responses.create(
         model=test_model,
         messages=[{"role": "user", "content": "Hello"}],
     )
@@ -424,11 +424,11 @@ jobs:
       - uses: actions/checkout@v3
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Build chat2response
+      - name: Build routiium
         run: cargo build --release
 
       - name: Start server
-        run: ./target/release/chat2response &
+        run: ./target/release/routiium &
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
@@ -485,7 +485,7 @@ print(f"Output: {parsed.output_text}")
 
 ### Test Against OpenAI Directly
 
-Compare chat2response behavior with direct OpenAI calls:
+Compare routiium behavior with direct OpenAI calls:
 
 ```python
 # Direct to OpenAI (for comparison)
@@ -506,7 +506,7 @@ response = direct_client.responses.create(
 ### When to Update Tests
 
 - OpenAI changes Responses API format
-- chat2response adds new features to /v1/responses
+- routiium adds new features to /v1/responses
 - Performance requirements change
 - New error cases discovered
 
@@ -536,4 +536,4 @@ Proper testing of the `/v1/responses` endpoint uses the native OpenAI Python SDK
 ✅ Parameter forwarding  
 ✅ Performance characteristics  
 
-This ensures chat2response reliably proxies requests to the Responses API while maintaining the expected interface and behavior.
+This ensures routiium reliably proxies requests to the Responses API while maintaining the expected interface and behavior.

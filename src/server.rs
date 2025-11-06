@@ -1,17 +1,365 @@
 use actix_web::http::header;
-use actix_web::{web, HttpRequest, HttpResponse, Responder};
+use actix_web::{web, HttpRequest, HttpResponse, HttpResponseBuilder, Responder};
+use bytes::Bytes;
+#[allow(unused_imports)]
+use futures_util::TryStreamExt;
 use serde::Deserialize;
+use std::collections::HashMap;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
+use crate::conversion::{
+    responses_chunk_to_chat_chunk, responses_to_chat_response, to_responses_request,
+};
 use crate::models::chat::ChatCompletionRequest;
+use crate::models::responses;
+use crate::router_client::{
+    extract_route_request, PrivacyMode as RouterPrivacyMode, RouteError, RoutePlan,
+    UpstreamMode as RouterUpstreamMode,
+};
 use crate::util::AppState;
 
 use crate::util::error_response;
-
+use tracing::warn;
 /// Query parameters for conversion/proxy endpoints.
 #[derive(Debug, Deserialize)]
 pub struct ConvertQuery {
     /// Optional Responses conversation id to make the call stateful.
     pub conversation_id: Option<String>,
+}
+
+#[derive(Clone)]
+struct UpstreamResolution {
+    base_url: String,
+    mode: crate::util::UpstreamMode,
+    key_env: Option<String>,
+    headers: Option<HashMap<String, String>>,
+    model_id: String,
+    plan: Option<RoutePlan>,
+}
+
+fn router_privacy_mode_from_env() -> RouterPrivacyMode {
+    match std::env::var("ROUTIIUM_ROUTER_PRIVACY_MODE")
+        .unwrap_or_else(|_| "features".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "summary" => RouterPrivacyMode::Summary,
+        "full" => RouterPrivacyMode::Full,
+        _ => RouterPrivacyMode::FeaturesOnly,
+    }
+}
+
+fn map_router_mode(mode: RouterUpstreamMode) -> crate::util::UpstreamMode {
+    match mode {
+        RouterUpstreamMode::Responses => crate::util::UpstreamMode::Responses,
+        RouterUpstreamMode::Chat => crate::util::UpstreamMode::Chat,
+    }
+}
+
+fn router_strict_mode() -> bool {
+    matches!(
+        std::env::var("ROUTIIUM_ROUTER_STRICT")
+            .ok()
+            .as_deref()
+            .map(|v| v.trim().to_ascii_lowercase()),
+        Some(ref v) if v == "1" || v == "true" || v == "yes" || v == "on"
+    )
+}
+
+fn resolve_upstream(
+    state: &AppState,
+    api: &str,
+    body: &serde_json::Value,
+) -> Result<UpstreamResolution, RouteError> {
+    let requested_model = body.get("model").and_then(|v| v.as_str()).unwrap_or("");
+    let strict_mode = router_strict_mode();
+
+    if let Some(router) = state.router_client.as_ref() {
+        if !requested_model.is_empty() {
+            let privacy_mode = router_privacy_mode_from_env();
+            let route_request = extract_route_request(requested_model, api, body, privacy_mode);
+            match router.plan(&route_request) {
+                Ok(plan) => {
+                    let model_id = plan.upstream.model_id.clone();
+                    return Ok(UpstreamResolution {
+                        base_url: plan.upstream.base_url.clone(),
+                        mode: map_router_mode(plan.upstream.mode),
+                        key_env: plan.upstream.auth_env.clone(),
+                        headers: plan.upstream.headers.clone(),
+                        model_id,
+                        plan: Some(plan),
+                    });
+                }
+                Err(e) => {
+                    if strict_mode {
+                        return Err(e);
+                    }
+                    tracing::debug!(
+                        "Router plan unavailable for alias {} (api={}): {}; falling back to legacy routing",
+                        requested_model,
+                        api,
+                        e
+                    );
+                }
+            }
+        }
+    }
+
+    // Fallback to legacy prefix-based routing
+    let mut base_url: Option<String> = None;
+    let mut mode: Option<crate::util::UpstreamMode> = None;
+    let mut key_env: Option<String> = None;
+
+    if let Ok(cfg) = std::env::var("ROUTIIUM_BACKENDS") {
+        if !requested_model.is_empty() {
+            for rule_raw in cfg.split(';') {
+                let r = rule_raw.trim();
+                if r.is_empty() {
+                    continue;
+                }
+                let mut prefix: Option<String> = None;
+                let mut base: Option<String> = None;
+                let mut key_env_local: Option<String> = None;
+                let mut mode_local: Option<crate::util::UpstreamMode> = None;
+
+                for kv in r.split([',', ';']) {
+                    let p = kv.trim();
+                    if p.is_empty() || !p.contains('=') {
+                        continue;
+                    }
+                    let mut it = p.splitn(2, '=');
+                    let k = it.next().unwrap_or("").trim().to_ascii_lowercase();
+                    let v = it.next().unwrap_or("").trim().to_string();
+                    if v.is_empty() {
+                        continue;
+                    }
+                    match k.as_str() {
+                        "prefix" => prefix = Some(v),
+                        "base" | "base_url" => base = Some(v),
+                        "key_env" | "api_key_env" => key_env_local = Some(v),
+                        "mode" => {
+                            let vv = v.to_ascii_lowercase();
+                            mode_local = if vv == "chat" {
+                                Some(crate::util::UpstreamMode::Chat)
+                            } else {
+                                Some(crate::util::UpstreamMode::Responses)
+                            };
+                        }
+                        _ => {}
+                    }
+                }
+
+                if let (Some(pfx), Some(bu)) = (prefix, base) {
+                    if requested_model.starts_with(pfx.as_str()) {
+                        base_url = Some(bu);
+                        mode = mode_local;
+                        key_env = key_env_local;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let resolved_model = if !requested_model.is_empty() {
+        requested_model.to_string()
+    } else {
+        std::env::var("MODEL").unwrap_or_else(|_| "gpt-5-nano".to_string())
+    };
+
+    let fallback_mode = mode.unwrap_or_else(|| {
+        if api.eq_ignore_ascii_case("chat") {
+            crate::util::UpstreamMode::Chat
+        } else {
+            crate::util::upstream_mode_from_env()
+        }
+    });
+
+    Ok(UpstreamResolution {
+        base_url: base_url.unwrap_or_else(crate::util::openai_base_url),
+        mode: fallback_mode,
+        key_env,
+        headers: None,
+        model_id: resolved_model,
+        plan: None,
+    })
+}
+
+fn insert_route_headers(builder: &mut HttpResponseBuilder, plan: &RoutePlan, resolved_model: &str) {
+    builder.insert_header(("x-route-id", plan.route_id.clone()));
+    builder.insert_header(("x-resolved-model", resolved_model.to_string()));
+    if let Some(schema) = plan.schema_version.as_deref() {
+        builder.insert_header(("router-schema", schema.to_string()));
+    }
+    if let Some(policy) = plan.policy_rev.as_deref() {
+        builder.insert_header(("x-policy-rev", policy.to_string()));
+    }
+    if let Some(content_used) = plan.content_used.as_deref() {
+        builder.insert_header(("x-content-used", content_used.to_string()));
+    }
+}
+
+fn apply_upstream_headers(
+    builder: reqwest::RequestBuilder,
+    headers: &Option<HashMap<String, String>>,
+) -> reqwest::RequestBuilder {
+    if let Some(map) = headers {
+        let mut builder = builder;
+        for (key, value) in map {
+            match (
+                reqwest::header::HeaderName::from_bytes(key.as_bytes()),
+                reqwest::header::HeaderValue::from_str(value),
+            ) {
+                (Ok(name), Ok(val)) => {
+                    builder = builder.header(name, val);
+                }
+                _ => warn!("Skipping invalid upstream header from router: {}", key),
+            }
+        }
+        builder
+    } else {
+        builder
+    }
+}
+
+fn trim_ascii(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        .map(|idx| idx + 1)
+        .unwrap_or(start);
+    &bytes[start..end]
+}
+
+struct ResponsesSseToChatSse<S> {
+    inner: S,
+    buffer: Vec<u8>,
+    done: bool,
+    is_first_chunk: bool,
+}
+
+impl<S> ResponsesSseToChatSse<S>
+where
+    S: futures_util::stream::Stream<Item = Result<Bytes, std::io::Error>> + Unpin,
+{
+    fn new(inner: S) -> Self {
+        Self {
+            inner,
+            buffer: Vec::new(),
+            done: false,
+            is_first_chunk: true,
+        }
+    }
+
+    fn next_event(&mut self) -> Option<Vec<u8>> {
+        if let Some(pos) = self.buffer.windows(2).position(|window| window == b"\n\n") {
+            let mut event = self.buffer.drain(..pos + 2).collect::<Vec<u8>>();
+            let original_event = event.clone();
+            // Remove trailing delimiter from event slice for parsing
+            event.truncate(event.len().saturating_sub(2));
+
+            let mut other_lines = Vec::new();
+            let mut data_segments: Vec<Vec<u8>> = Vec::new();
+            for line in event.split(|&b| b == b'\n') {
+                let line = if let Some(stripped) = line.strip_suffix(b"\r") {
+                    stripped
+                } else {
+                    line
+                };
+                if line.starts_with(b"data:") {
+                    let payload = trim_ascii(&line[5..]);
+                    if !payload.is_empty() {
+                        data_segments.push(payload.to_vec());
+                    }
+                } else if !line.is_empty() {
+                    other_lines.push(line.to_vec());
+                }
+            }
+
+            if data_segments.is_empty() {
+                return Some(original_event);
+            }
+
+            let data_payload = data_segments.join(&b'\n');
+            if trim_ascii(&data_payload) == b"[DONE]" {
+                let mut out = Vec::new();
+                for line in &other_lines {
+                    out.extend_from_slice(line);
+                    out.push(b'\n');
+                }
+                out.extend_from_slice(b"data: [DONE]\n\n");
+                return Some(out);
+            }
+
+            match serde_json::from_slice::<responses::ResponsesChunk>(&data_payload) {
+                Ok(chunk) => {
+                    let chat_chunk = responses_chunk_to_chat_chunk(&chunk, self.is_first_chunk);
+                    self.is_first_chunk = false;
+                    match serde_json::to_vec(&chat_chunk) {
+                        Ok(json) => {
+                            let mut out = Vec::new();
+                            for line in &other_lines {
+                                out.extend_from_slice(line);
+                                out.push(b'\n');
+                            }
+                            out.extend_from_slice(b"data: ");
+                            out.extend_from_slice(&json);
+                            out.extend_from_slice(b"\n\n");
+                            Some(out)
+                        }
+                        Err(_) => Some(original_event),
+                    }
+                }
+                Err(_) => Some(original_event),
+            }
+        } else {
+            None
+        }
+    }
+}
+
+impl<S> futures_util::stream::Stream for ResponsesSseToChatSse<S>
+where
+    S: futures_util::stream::Stream<Item = Result<Bytes, std::io::Error>> + Unpin,
+{
+    type Item = Result<Bytes, std::io::Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+
+        loop {
+            if let Some(event) = this.next_event() {
+                return Poll::Ready(Some(Ok(Bytes::from(event))));
+            }
+
+            if this.done {
+                if this.buffer.is_empty() {
+                    return Poll::Ready(None);
+                } else {
+                    // Emit remaining buffer even if it lacks terminator
+                    let remaining = std::mem::take(&mut this.buffer);
+                    return Poll::Ready(Some(Ok(Bytes::from(remaining))));
+                }
+            }
+
+            match Pin::new(&mut this.inner).poll_next(cx) {
+                Poll::Ready(Some(Ok(chunk))) => {
+                    this.buffer.extend_from_slice(&chunk);
+                }
+                Poll::Ready(Some(Err(err))) => return Poll::Ready(Some(Err(err))),
+                Poll::Ready(None) => {
+                    this.done = true;
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
 }
 
 /// Passthrough for OpenAI Responses API (`/v1/responses`):
@@ -151,126 +499,183 @@ async fn responses_passthrough(
         .unwrap_or(false);
 
     let client = &state.http;
-
-    if stream {
-        // Routed streaming: picks provider base URL, path, mode, and appropriate API key
-        match crate::util::sse_proxy_stream_with_bearer_routed(
-            client,
-            &body,
-            upstream_bearer.as_deref(),
-        )
-        .await
-        {
-            Ok(resp) => resp,
-            Err(e) => error_response(http::StatusCode::BAD_GATEWAY, &e.to_string()),
+    let resolution = match resolve_upstream(&state, "responses", &body) {
+        Ok(res) => res,
+        Err(err) => {
+            return error_response(
+                http::StatusCode::BAD_GATEWAY,
+                &format!("Router error: {}", err),
+            );
         }
-    } else {
-        // Non-stream routed POST with optional translation when upstream expects Chat
-        let mut effective_body = body.clone();
+    };
 
-        // Resolve backend by model prefix from CHAT2RESPONSE_BACKENDS; fallback to OpenAI
-        let mut base_url: Option<String> = None;
-        let mut route_mode: Option<crate::util::UpstreamMode> = None;
-        let mut key_env: Option<String> = None;
+    let mut effective_body = body.clone();
+    if let Some(obj) = effective_body.as_object_mut() {
+        obj.insert(
+            "model".to_string(),
+            serde_json::json!(resolution.model_id.clone()),
+        );
+    }
 
-        if let Ok(cfg) = std::env::var("CHAT2RESPONSE_BACKENDS") {
-            if let Some(m) = effective_body.get("model").and_then(|v| v.as_str()) {
-                for rule_raw in cfg.split(';') {
-                    let r = rule_raw.trim();
-                    if r.is_empty() {
-                        continue;
-                    }
-                    let mut prefix: Option<String> = None;
-                    let mut base: Option<String> = None;
-                    let mut key_env_local: Option<String> = None;
-                    let mut mode_local: Option<crate::util::UpstreamMode> = None;
-
-                    for kv in r.split([',', ';']) {
-                        let p = kv.trim();
-                        if p.is_empty() || !p.contains('=') {
-                            continue;
-                        }
-                        let mut it = p.splitn(2, '=');
-                        let k = it.next().unwrap_or("").trim().to_ascii_lowercase();
-                        let v = it.next().unwrap_or("").trim().to_string();
-                        if v.is_empty() {
-                            continue;
-                        }
-                        match k.as_str() {
-                            "prefix" => prefix = Some(v),
-                            "base" | "base_url" => base = Some(v),
-                            "key_env" | "api_key_env" => key_env_local = Some(v),
-                            "mode" => {
-                                let vv = v.to_ascii_lowercase();
-                                mode_local = if vv == "chat" {
-                                    Some(crate::util::UpstreamMode::Chat)
-                                } else {
-                                    Some(crate::util::UpstreamMode::Responses)
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    if let (Some(pfx), Some(bu)) = (prefix, base) {
-                        if m.starts_with(pfx.as_str()) {
-                            base_url = Some(bu);
-                            route_mode = mode_local;
-                            key_env = key_env_local;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        let mode = route_mode.unwrap_or_else(crate::util::upstream_mode_from_env);
-        let base = base_url.unwrap_or_else(crate::util::openai_base_url);
-        let real_url = match mode {
-            crate::util::UpstreamMode::Responses => {
-                format!("{}/responses", base.trim_end_matches('/'))
-            }
-            crate::util::UpstreamMode::Chat => {
-                // Translate Responses-shaped payload to Chat for Chat upstreams
-                let chat_req = crate::conversion::responses_json_to_chat_request(&effective_body);
-                if let Ok(v) = serde_json::to_value(chat_req) {
-                    effective_body = v;
-                }
-                format!("{}/chat/completions", base.trim_end_matches('/'))
-            }
-        };
-
-        // Determine effective bearer: explicit (passthrough) > key_env > OPENAI_API_KEY
-        let mut eff_bearer = upstream_bearer.clone();
-        if eff_bearer.is_none() {
-            if let Some(k) = key_env {
-                if let Ok(v) = std::env::var(k) {
-                    if !v.is_empty() {
-                        eff_bearer = Some(v);
-                    }
-                }
-            }
-        }
-        if eff_bearer.is_none() {
-            if let Ok(v) = std::env::var("OPENAI_API_KEY") {
+    let mut eff_bearer = upstream_bearer.clone();
+    if eff_bearer.is_none() {
+        if let Some(key_env) = resolution.key_env.as_deref() {
+            if let Ok(v) = std::env::var(key_env) {
                 if !v.is_empty() {
                     eff_bearer = Some(v);
                 }
             }
         }
+    }
+    if eff_bearer.is_none() {
+        if let Ok(v) = std::env::var("OPENAI_API_KEY") {
+            if !v.is_empty() {
+                eff_bearer = Some(v);
+            }
+        }
+    }
 
+    let endpoint = match resolution.mode {
+        crate::util::UpstreamMode::Responses => "responses",
+        crate::util::UpstreamMode::Chat => "chat/completions",
+    };
+    let base = resolution.base_url.trim_end_matches('/');
+
+    if stream {
+        use bytes::Bytes;
+        use futures_util::TryStreamExt;
+
+        let mut stream_body = effective_body.clone();
+        if matches!(resolution.mode, crate::util::UpstreamMode::Chat) {
+            let chat_req = crate::conversion::responses_json_to_chat_request(&stream_body);
+            if let Ok(v) = serde_json::to_value(chat_req) {
+                stream_body = v;
+            }
+        }
+
+        let real_url = format!("{}/{}", base, endpoint);
+        let mut rb = client
+            .post(&real_url)
+            .header("accept", "text/event-stream")
+            .header("content-type", "application/json")
+            .header("connection", "close")
+            .json(&stream_body);
+        rb = apply_upstream_headers(rb, &resolution.headers);
+        if let Some(b) = eff_bearer.clone() {
+            rb = rb.bearer_auth(b);
+        }
+
+        match rb.send().await {
+            Ok(up) => {
+                let status = up.status();
+                if !status.is_success() {
+                    let bytes = up.bytes().await.unwrap_or_default();
+                    let mut builder = HttpResponse::build(
+                        actix_web::http::StatusCode::from_u16(status.as_u16()).unwrap(),
+                    );
+                    if let Some(plan) = resolution.plan.as_ref() {
+                        insert_route_headers(&mut builder, plan, &resolution.model_id);
+                    }
+                    return builder.body(bytes);
+                }
+
+                let upstream_ct = up.headers().get("content-type").cloned();
+                let base_stream = up
+                    .bytes_stream()
+                    .map_err(|e| std::io::Error::other(e.to_string()))
+                    .map_ok(Bytes::from);
+
+                let stream: Pin<
+                    Box<
+                        dyn futures_util::stream::Stream<Item = Result<Bytes, std::io::Error>>
+                            + Send,
+                    >,
+                > = if let Some(plan) = resolution.plan.as_ref() {
+                    if matches!(plan.upstream.mode, RouterUpstreamMode::Responses) {
+                        Box::pin(ResponsesSseToChatSse::new(base_stream))
+                    } else {
+                        Box::pin(base_stream)
+                    }
+                } else {
+                    Box::pin(base_stream)
+                };
+
+                let stream: Pin<
+                    Box<
+                        dyn futures_util::stream::Stream<Item = Result<Bytes, std::io::Error>>
+                            + Send,
+                    >,
+                > = if let Some(plan) = resolution.plan.as_ref() {
+                    if matches!(plan.upstream.mode, RouterUpstreamMode::Responses) {
+                        Box::pin(ResponsesSseToChatSse::new(stream))
+                    } else {
+                        Box::pin(stream)
+                    }
+                } else {
+                    Box::pin(stream)
+                };
+
+                let mut response = HttpResponse::Ok();
+                if let Some(ct) = upstream_ct {
+                    if let Ok(ct_str) = ct.to_str() {
+                        response.insert_header(("content-type", ct_str));
+                    } else {
+                        response.insert_header(("content-type", "text/event-stream"));
+                    }
+                } else {
+                    response.insert_header(("content-type", "text/event-stream"));
+                }
+                response
+                    .insert_header(("cache-control", "no-cache"))
+                    .insert_header(("connection", "keep-alive"));
+                if let Some(plan) = resolution.plan.as_ref() {
+                    insert_route_headers(&mut response, plan, &resolution.model_id);
+                }
+                response.streaming(stream)
+            }
+            Err(e) => error_response(http::StatusCode::BAD_GATEWAY, &e.to_string()),
+        }
+    } else {
+        let mut outbound_body = effective_body.clone();
+        if matches!(resolution.mode, crate::util::UpstreamMode::Chat) {
+            let chat_req = crate::conversion::responses_json_to_chat_request(&outbound_body);
+            if let Ok(v) = serde_json::to_value(chat_req) {
+                outbound_body = v;
+            }
+        }
+
+        let real_url = format!("{}/{}", base, endpoint);
         let mut req = client
             .post(&real_url)
             .header("content-type", "application/json");
+        req = apply_upstream_headers(req, &resolution.headers);
         if let Some(b) = eff_bearer {
             req = req.bearer_auth(b);
         }
-        match req.json(&effective_body).send().await {
+        match req.json(&outbound_body).send().await {
             Ok(up) => {
                 let status = up.status();
                 let bytes = up.bytes().await.unwrap_or_default();
-                HttpResponse::build(actix_web::http::StatusCode::from_u16(status.as_u16()).unwrap())
-                    .body(bytes)
+                let mut builder = HttpResponse::build(
+                    actix_web::http::StatusCode::from_u16(status.as_u16()).unwrap(),
+                );
+                if let Some(plan) = resolution.plan.as_ref() {
+                    insert_route_headers(&mut builder, plan, &resolution.model_id);
+                    if status.is_success()
+                        && matches!(plan.upstream.mode, RouterUpstreamMode::Responses)
+                    {
+                        if let Ok(resp_obj) =
+                            serde_json::from_slice::<responses::ResponsesResponse>(&bytes)
+                        {
+                            let chat_resp = responses_to_chat_response(&resp_obj);
+                            if let Ok(body) = serde_json::to_vec(&chat_resp) {
+                                builder.insert_header(("content-type", "application/json"));
+                                return builder.body(body);
+                            }
+                        }
+                    }
+                }
+                builder.body(bytes)
             }
             Err(e) => error_response(http::StatusCode::BAD_GATEWAY, &e.to_string()),
         }
@@ -354,7 +759,7 @@ async fn status(state: web::Data<AppState>) -> impl Responder {
     };
 
     web::Json(serde_json::json!({
-        "name": "chat2response",
+        "name": "routiium",
         "version": env!("CARGO_PKG_VERSION"),
         "proxy_enabled": proxy_enabled,
         "routes": routes,
@@ -497,58 +902,27 @@ async fn chat_completions_passthrough(
         .unwrap_or(false);
 
     let client = &state.http;
-
-    // Resolve backend base URL and optional key env by model prefix
-    let mut base_url: Option<String> = None;
-    let mut key_env: Option<String> = None;
-    if let Ok(cfg) = std::env::var("CHAT2RESPONSE_BACKENDS") {
-        if let Some(m) = body.get("model").and_then(|v| v.as_str()) {
-            for rule_raw in cfg.split(';') {
-                let r = rule_raw.trim();
-                if r.is_empty() {
-                    continue;
-                }
-                let mut prefix: Option<String> = None;
-                let mut base: Option<String> = None;
-                let mut key_env_local: Option<String> = None;
-
-                for kv in r.split([',', ';']) {
-                    let p = kv.trim();
-                    if p.is_empty() || !p.contains('=') {
-                        continue;
-                    }
-                    let mut it = p.splitn(2, '=');
-                    let k = it.next().unwrap_or("").trim().to_ascii_lowercase();
-                    let v = it.next().unwrap_or("").trim().to_string();
-                    if v.is_empty() {
-                        continue;
-                    }
-                    match k.as_str() {
-                        "prefix" => prefix = Some(v),
-                        "base" | "base_url" => base = Some(v),
-                        "key_env" | "api_key_env" => key_env_local = Some(v),
-                        _ => {}
-                    }
-                }
-
-                if let (Some(pfx), Some(bu)) = (prefix, base) {
-                    if m.starts_with(pfx.as_str()) {
-                        base_url = Some(bu);
-                        key_env = key_env_local;
-                        break;
-                    }
-                }
-            }
+    let resolution = match resolve_upstream(&state, "chat", &body) {
+        Ok(res) => res,
+        Err(err) => {
+            return error_response(
+                http::StatusCode::BAD_GATEWAY,
+                &format!("Router error: {}", err),
+            );
         }
-    }
-    let base = base_url.unwrap_or_else(crate::util::openai_base_url);
-    let url = format!("{}/chat/completions", base.trim_end_matches('/'));
+    };
 
-    // Determine effective bearer: explicit (passthrough) > key_env > OPENAI_API_KEY
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert(
+            "model".to_string(),
+            serde_json::json!(resolution.model_id.clone()),
+        );
+    }
+
     let mut eff_bearer = upstream_bearer.clone();
     if eff_bearer.is_none() {
-        if let Some(k) = key_env.clone() {
-            if let Ok(v) = std::env::var(k) {
+        if let Some(key_env) = resolution.key_env.as_deref() {
+            if let Ok(v) = std::env::var(key_env) {
                 if !v.is_empty() {
                     eff_bearer = Some(v);
                 }
@@ -563,18 +937,41 @@ async fn chat_completions_passthrough(
         }
     }
 
+    let endpoint = match resolution.mode {
+        crate::util::UpstreamMode::Responses => "responses",
+        crate::util::UpstreamMode::Chat => "chat/completions",
+    };
+    let base = resolution.base_url.trim_end_matches('/');
+
+    let convert_chat_to_responses = |payload: &serde_json::Value| -> Option<serde_json::Value> {
+        serde_json::from_value::<ChatCompletionRequest>(payload.clone())
+            .ok()
+            .map(|req| to_responses_request(&req, None))
+            .and_then(|req| serde_json::to_value(req).ok())
+    };
+
     if stream {
-        // Direct streaming passthrough to routed Chat endpoint
         use bytes::Bytes;
         use futures_util::TryStreamExt;
 
+        let mut outbound_body = body.clone();
+        if matches!(resolution.mode, crate::util::UpstreamMode::Responses) {
+            if let Some(converted) = convert_chat_to_responses(&outbound_body) {
+                outbound_body = converted;
+            } else {
+                warn!("Failed to convert chat payload to Responses request for router plan");
+            }
+        }
+
+        let real_url = format!("{}/{}", base, endpoint);
         let mut rb = client
-            .post(&url)
+            .post(&real_url)
             .header("accept", "text/event-stream")
             .header("content-type", "application/json")
             .header("connection", "close")
-            .json(&body);
-        if let Some(b) = eff_bearer {
+            .json(&outbound_body);
+        rb = apply_upstream_headers(rb, &resolution.headers);
+        if let Some(b) = eff_bearer.clone() {
             rb = rb.bearer_auth(b);
         }
         match rb.send().await {
@@ -582,10 +979,13 @@ async fn chat_completions_passthrough(
                 let status = up.status();
                 if !status.is_success() {
                     let bytes = up.bytes().await.unwrap_or_default();
-                    return HttpResponse::build(
+                    let mut builder = HttpResponse::build(
                         actix_web::http::StatusCode::from_u16(status.as_u16()).unwrap(),
-                    )
-                    .body(bytes);
+                    );
+                    if let Some(plan) = resolution.plan.as_ref() {
+                        insert_route_headers(&mut builder, plan, &resolution.model_id);
+                    }
+                    return builder.body(bytes);
                 }
                 let upstream_ct = up.headers().get("content-type").cloned();
                 let stream = up
@@ -606,22 +1006,66 @@ async fn chat_completions_passthrough(
 
                 response
                     .insert_header(("cache-control", "no-cache"))
-                    .insert_header(("connection", "keep-alive"))
-                    .streaming(stream)
+                    .insert_header(("connection", "keep-alive"));
+                if let Some(plan) = resolution.plan.as_ref() {
+                    insert_route_headers(&mut response, plan, &resolution.model_id);
+                }
+                response.streaming(stream)
             }
             Err(e) => error_response(http::StatusCode::BAD_GATEWAY, &e.to_string()),
         }
     } else {
-        let mut req = client.post(&url).header("content-type", "application/json");
+        let mut outbound_body = body.clone();
+        if matches!(resolution.mode, crate::util::UpstreamMode::Responses) {
+            if let Some(converted) = convert_chat_to_responses(&outbound_body) {
+                outbound_body = converted;
+            } else {
+                warn!("Failed to convert chat payload to Responses request for router plan");
+            }
+        }
+
+        let real_url = format!("{}/{}", base, endpoint);
+        let mut req = client
+            .post(&real_url)
+            .header("content-type", "application/json");
+        req = apply_upstream_headers(req, &resolution.headers);
         if let Some(b) = eff_bearer {
             req = req.bearer_auth(b);
         }
-        match req.json(&body).send().await {
+        match req.json(&outbound_body).send().await {
             Ok(up) => {
                 let status = up.status();
                 let bytes = up.bytes().await.unwrap_or_default();
-                HttpResponse::build(actix_web::http::StatusCode::from_u16(status.as_u16()).unwrap())
-                    .body(bytes)
+                let mut builder = HttpResponse::build(
+                    actix_web::http::StatusCode::from_u16(status.as_u16()).unwrap(),
+                );
+                if let Some(plan) = resolution.plan.as_ref() {
+                    insert_route_headers(&mut builder, plan, &resolution.model_id);
+                    if status.is_success()
+                        && matches!(plan.upstream.mode, RouterUpstreamMode::Responses)
+                    {
+                        match serde_json::from_slice::<responses::ResponsesResponse>(&bytes) {
+                            Ok(resp_obj) => {
+                                let chat_resp = responses_to_chat_response(&resp_obj);
+                                match serde_json::to_vec(&chat_resp) {
+                                    Ok(body) => {
+                                        builder.insert_header(("content-type", "application/json"));
+                                        return builder.body(body);
+                                    }
+                                    Err(err) => tracing::debug!(
+                                        "Failed to serialize chat conversion payload: {}",
+                                        err
+                                    ),
+                                }
+                            }
+                            Err(err) => tracing::debug!(
+                                "Failed to parse Responses payload for chat conversion: {}",
+                                err
+                            ),
+                        }
+                    }
+                }
+                builder.body(bytes)
             }
             Err(e) => error_response(http::StatusCode::BAD_GATEWAY, &e.to_string()),
         }
@@ -643,7 +1087,7 @@ async fn generate_key(
     let payload = body.into_inner();
 
     // Env flag to require expiration at creation
-    let require_exp = std::env::var("CHAT2RESPONSE_KEYS_REQUIRE_EXPIRATION")
+    let require_exp = std::env::var("ROUTIIUM_KEYS_REQUIRE_EXPIRATION")
         .map(|v| {
             let v = v.trim().to_ascii_lowercase();
             v == "1" || v == "true" || v == "yes" || v == "on"
@@ -651,7 +1095,7 @@ async fn generate_key(
         .unwrap_or(false);
 
     // Optional default TTL (seconds) from env
-    let default_ttl_secs: Option<u64> = std::env::var("CHAT2RESPONSE_KEYS_DEFAULT_TTL_SECONDS")
+    let default_ttl_secs: Option<u64> = std::env::var("ROUTIIUM_KEYS_DEFAULT_TTL_SECONDS")
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok());
 

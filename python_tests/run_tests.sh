@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #####################################################################
-# QUICK TEST RUNNER FOR CHAT2RESPONSE
+# QUICK TEST RUNNER FOR ROUTIIUM
 #####################################################################
 #
-# This script runs tests against an already-running chat2response server.
+# This script runs tests against an already-running routiium server.
 # Use this when you want to run tests without starting/stopping the server.
 #
 # Usage:
@@ -47,14 +47,14 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 
 # Check if server is running
-CHAT2RESPONSE_BASE=$(grep CHAT2RESPONSE_BASE "$ENV_FILE" | cut -d= -f2)
-if [ -z "$CHAT2RESPONSE_BASE" ]; then
-    CHAT2RESPONSE_BASE="http://127.0.0.1:8099"
+ROUTIIUM_BASE=$(grep ROUTIIUM_BASE "$ENV_FILE" | cut -d= -f2)
+if [ -z "$ROUTIIUM_BASE" ]; then
+    ROUTIIUM_BASE="http://127.0.0.1:8099"
 fi
 
-log_info "Checking if chat2response server is running at $CHAT2RESPONSE_BASE..."
-if ! curl -s "${CHAT2RESPONSE_BASE}/status" > /dev/null 2>&1; then
-    log_error "chat2response server is not running at $CHAT2RESPONSE_BASE"
+log_info "Checking if routiium server is running at $ROUTIIUM_BASE..."
+if ! curl -s "${ROUTIIUM_BASE}/status" > /dev/null 2>&1; then
+    log_error "routiium server is not running at $ROUTIIUM_BASE"
     log_info "Start the server first with: cd .. && cargo run --release"
     exit 1
 fi

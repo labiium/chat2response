@@ -1,5 +1,5 @@
 """
-Integration tests for tool calling via chat2response proxy.
+Integration tests for tool calling via routiium proxy.
 
 Tests validate:
 1. Basic tool calling with function definitions
@@ -23,21 +23,21 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "../../.env"))
 
 
 @pytest.fixture(scope="module")
-def chat2response_client():
+def routiium_client():
     """
-    Create OpenAI client configured to use chat2response as backend.
+    Create OpenAI client configured to use routiium as backend.
 
     Returns:
-        OpenAI: Client pointing to chat2response proxy server
+        OpenAI: Client pointing to routiium proxy server
     """
-    base_url = os.getenv("CHAT2RESPONSE_BASE", "http://127.0.0.1:8099")
+    base_url = os.getenv("ROUTIIUM_BASE", "http://127.0.0.1:8099")
     # Use the generated access token for managed authentication mode
     api_key = os.getenv(
-        "CHAT2RESPONSE_ACCESS_TOKEN", os.getenv("OPENAI_API_KEY", "test-key")
+        "ROUTIIUM_ACCESS_TOKEN", os.getenv("OPENAI_API_KEY", "test-key")
     )
 
     if not base_url:
-        pytest.skip("CHAT2RESPONSE_BASE not configured")
+        pytest.skip("ROUTIIUM_BASE not configured")
 
     client = OpenAI(
         base_url=f"{base_url}/v1",
@@ -50,6 +50,9 @@ def chat2response_client():
 @pytest.fixture
 def test_model():
     """Get the model to use for testing from environment or use default."""
+    chat_model = os.getenv("CHAT_MODEL")
+    if chat_model:
+        return chat_model
     return os.getenv("MODEL", "gpt-4o-mini")
 
 
@@ -120,7 +123,7 @@ def calculator_tools():
 class TestBasicToolCalling:
     """Test suite for basic tool calling functionality."""
 
-    def test_single_tool_call(self, chat2response_client, test_model, weather_tool):
+    def test_single_tool_call(self, routiium_client, test_model, weather_tool):
         """
         Test basic tool calling with a single tool.
 
@@ -129,7 +132,7 @@ class TestBasicToolCalling:
         - Tool call contains proper structure
         - Function name and arguments are correct
         """
-        response = chat2response_client.chat.completions.create(
+        response = routiium_client.chat.completions.create(
             model=test_model,
             messages=[
                 {"role": "user", "content": "What's the weather in San Francisco?"}
@@ -157,7 +160,7 @@ class TestBasicToolCalling:
         print(f"  Arguments: {tool_call.function.arguments}")
 
     def test_tool_call_with_specific_parameters(
-        self, chat2response_client, test_model, weather_tool
+        self, routiium_client, test_model, weather_tool
     ):
         """
         Test tool calling with specific parameter requirements.
@@ -166,7 +169,7 @@ class TestBasicToolCalling:
         - Model correctly extracts parameters from natural language
         - Both required and optional parameters are handled
         """
-        response = chat2response_client.chat.completions.create(
+        response = routiium_client.chat.completions.create(
             model=test_model,
             messages=[
                 {"role": "user", "content": "What's the weather in Tokyo in celsius?"}
@@ -192,7 +195,7 @@ class TestBasicToolCalling:
         print(f"  Location: {args['location']}")
 
     def test_multiple_tools_selection(
-        self, chat2response_client, test_model, calculator_tools
+        self, routiium_client, test_model, calculator_tools
     ):
         """
         Test that model selects correct tool from multiple options.
@@ -203,7 +206,7 @@ class TestBasicToolCalling:
 
         Note: Some models may respond with text instead of tool calls
         """
-        response = chat2response_client.chat.completions.create(
+        response = routiium_client.chat.completions.create(
             model=test_model,
             messages=[{"role": "user", "content": "What is 15 plus 27?"}],
             tools=calculator_tools,
@@ -229,7 +232,7 @@ class TestBasicToolCalling:
             # For gpt-5-nano or models without tool support, this is acceptable
             pytest.skip(f"Model {test_model} did not use tool calls for this query")
 
-    def test_forced_tool_call(self, chat2response_client, test_model, weather_tool):
+    def test_forced_tool_call(self, routiium_client, test_model, weather_tool):
         """
         Test forcing a specific tool call.
 
@@ -237,7 +240,7 @@ class TestBasicToolCalling:
         - tool_choice parameter works correctly
         - Specified tool is called even if not obvious from prompt
         """
-        response = chat2response_client.chat.completions.create(
+        response = routiium_client.chat.completions.create(
             model=test_model,
             messages=[{"role": "user", "content": "Tell me about Paris"}],
             tools=[weather_tool],
@@ -254,7 +257,7 @@ class TestBasicToolCalling:
 class TestStreamingToolCalling:
     """Test suite for streaming mode with tool calls."""
 
-    def test_streaming_tool_call(self, chat2response_client, test_model, weather_tool):
+    def test_streaming_tool_call(self, routiium_client, test_model, weather_tool):
         """
         Test tool calling in streaming mode.
 
@@ -263,7 +266,7 @@ class TestStreamingToolCalling:
         - Tool call chunks are properly accumulated
         - Final tool call is complete and valid
         """
-        stream = chat2response_client.chat.completions.create(
+        stream = routiium_client.chat.completions.create(
             model=test_model,
             messages=[{"role": "user", "content": "What's the weather in Boston?"}],
             tools=[weather_tool],
@@ -287,7 +290,7 @@ class TestStreamingToolCalling:
         print(f"  Tool call chunks: {len(tool_call_chunks)}")
 
     def test_streaming_mixed_content(
-        self, chat2response_client, test_model, calculator_tools
+        self, routiium_client, test_model, calculator_tools
     ):
         """
         Test streaming with both text and tool call content.
@@ -296,7 +299,7 @@ class TestStreamingToolCalling:
         - Both text content and tool calls can appear in stream
         - Content is properly separated
         """
-        stream = chat2response_client.chat.completions.create(
+        stream = routiium_client.chat.completions.create(
             model=test_model,
             messages=[
                 {
@@ -329,7 +332,7 @@ class TestMultiTurnToolConversations:
     """Test suite for multi-turn conversations with tool execution."""
 
     def test_tool_execution_and_response(
-        self, chat2response_client, test_model, calculator_tools
+        self, routiium_client, test_model, calculator_tools
     ):
         """
         Test complete tool execution flow.
@@ -342,7 +345,7 @@ class TestMultiTurnToolConversations:
         Note: Some models may respond with text instead of tool calls
         """
         # Step 1: Initial request that triggers tool call
-        response1 = chat2response_client.chat.completions.create(
+        response1 = routiium_client.chat.completions.create(
             model=test_model,
             messages=[{"role": "user", "content": "What is 123 times 456?"}],
             tools=calculator_tools,
@@ -370,7 +373,7 @@ class TestMultiTurnToolConversations:
         )
 
         # Step 2: Send tool result back
-        response2 = chat2response_client.chat.completions.create(
+        response2 = routiium_client.chat.completions.create(
             model=test_model,
             messages=[
                 {"role": "user", "content": "What is 123 times 456?"},
@@ -394,7 +397,7 @@ class TestMultiTurnToolConversations:
         print(f"✓ Final response: {response2.choices[0].message.content[:100]}")
 
     def test_multiple_tool_calls_in_conversation(
-        self, chat2response_client, test_model, calculator_tools
+        self, routiium_client, test_model, calculator_tools
     ):
         """
         Test multiple sequential tool calls.
@@ -404,7 +407,7 @@ class TestMultiTurnToolConversations:
         - Context is maintained across calls
         """
         # First calculation
-        response1 = chat2response_client.chat.completions.create(
+        response1 = routiium_client.chat.completions.create(
             model=test_model,
             messages=[{"role": "user", "content": "First, add 5 and 3"}],
             tools=calculator_tools,
@@ -423,7 +426,7 @@ class TestMultiTurnToolConversations:
         )
 
         # Second calculation building on first
-        response2 = chat2response_client.chat.completions.create(
+        response2 = routiium_client.chat.completions.create(
             model=test_model,
             messages=[
                 {"role": "user", "content": "First, add 5 and 3"},
@@ -451,7 +454,7 @@ class TestToolCallErrorHandling:
     """Test suite for error handling in tool calling."""
 
     def test_no_tool_call_when_not_needed(
-        self, chat2response_client, test_model, weather_tool
+        self, routiium_client, test_model, weather_tool
     ):
         """
         Test that tools are not called when not necessary.
@@ -460,7 +463,7 @@ class TestToolCallErrorHandling:
         - Model responds normally when tool is not needed
         - No spurious tool calls
         """
-        response = chat2response_client.chat.completions.create(
+        response = routiium_client.chat.completions.create(
             model=test_model,
             messages=[{"role": "user", "content": "What is the capital of France?"}],
             tools=[weather_tool],
@@ -477,7 +480,7 @@ class TestToolCallErrorHandling:
             print(f"  Response: {response.choices[0].message.content[:100]}")
 
     def test_tool_call_with_parallel_calls(
-        self, chat2response_client, test_model, calculator_tools
+        self, routiium_client, test_model, calculator_tools
     ):
         """
         Test handling of multiple parallel tool calls.
@@ -486,7 +489,7 @@ class TestToolCallErrorHandling:
         - Model can request multiple tool calls at once
         - All tool calls are properly structured
         """
-        response = chat2response_client.chat.completions.create(
+        response = routiium_client.chat.completions.create(
             model=test_model,
             messages=[{"role": "user", "content": "Calculate both 5+3 and 5*3"}],
             tools=calculator_tools,

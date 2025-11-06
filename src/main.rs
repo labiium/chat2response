@@ -1,9 +1,9 @@
 use actix_web::{web, App, HttpServer};
-use chat2response::auth::ApiKeyManager;
-use chat2response::mcp_client::McpClientManager;
-use chat2response::mcp_config::McpConfig;
-use chat2response::server::config_routes;
-use chat2response::util::{
+use routiium::auth::ApiKeyManager;
+use routiium::mcp_client::McpClientManager;
+use routiium::mcp_config::McpConfig;
+use routiium::server::config_routes;
+use routiium::util::{
     build_http_client_from_env, cors_config_from_env, env_bind_addr, init_tracing, AppState,
 };
 use std::env;
@@ -107,7 +107,7 @@ async fn main() -> std::io::Result<()> {
                 "Loading system prompt configuration from: {}",
                 prompt_config_path
             );
-            match chat2response::system_prompt_config::SystemPromptConfig::load_from_file(
+            match routiium::system_prompt_config::SystemPromptConfig::load_from_file(
                 &prompt_config_path,
             ) {
                 Ok(config) => {
@@ -125,7 +125,7 @@ async fn main() -> std::io::Result<()> {
                     tracing::warn!("Continuing with default (empty) system prompt config");
                     (
                         Arc::new(tokio::sync::RwLock::new(
-                            chat2response::system_prompt_config::SystemPromptConfig::empty(),
+                            routiium::system_prompt_config::SystemPromptConfig::empty(),
                         )),
                         None,
                     )
@@ -135,7 +135,7 @@ async fn main() -> std::io::Result<()> {
             tracing::info!("No system prompt config provided");
             (
                 Arc::new(tokio::sync::RwLock::new(
-                    chat2response::system_prompt_config::SystemPromptConfig::empty(),
+                    routiium::system_prompt_config::SystemPromptConfig::empty(),
                 )),
                 None,
             )
@@ -145,7 +145,7 @@ async fn main() -> std::io::Result<()> {
     let (routing_config, routing_config_path) =
         if let Some(routing_path) = routing_config_arg.clone() {
             tracing::info!("Loading routing configuration from: {}", routing_path);
-            match chat2response::routing_config::RoutingConfig::load_from_file(&routing_path) {
+            match routiium::routing_config::RoutingConfig::load_from_file(&routing_path) {
                 Ok(config) => {
                     tracing::info!(
                         "Routing configuration loaded ({} rules, {} aliases)",
@@ -162,27 +162,27 @@ async fn main() -> std::io::Result<()> {
                     tracing::warn!("Continuing with empty routing config");
                     (
                         Arc::new(tokio::sync::RwLock::new(
-                            chat2response::routing_config::RoutingConfig::empty(),
+                            routiium::routing_config::RoutingConfig::empty(),
                         )),
                         None,
                     )
                 }
             }
         } else {
-            tracing::info!("No routing config provided, using legacy CHAT2RESPONSE_BACKENDS");
+            tracing::info!("No routing config provided, using legacy ROUTIIUM_BACKENDS");
             (
                 Arc::new(tokio::sync::RwLock::new(
-                    chat2response::routing_config::RoutingConfig::empty(),
+                    routiium::routing_config::RoutingConfig::empty(),
                 )),
                 None,
             )
         };
 
     // Load router configuration if provided
-    let router_client: Option<Arc<dyn chat2response::router_client::RouterClient>> =
+    let router_client: Option<Arc<dyn routiium::router_client::RouterClient>> =
         if let Some(router_path) = router_config_arg.clone() {
             tracing::info!("Loading router configuration from: {}", router_path);
-            match chat2response::router_client::LocalPolicyRouter::from_file(&router_path) {
+            match routiium::router_client::LocalPolicyRouter::from_file(&router_path) {
                 Ok(router) => {
                     tracing::info!("Router configuration loaded (local policy)");
                     Some(Arc::new(router))
@@ -193,34 +193,32 @@ async fn main() -> std::io::Result<()> {
                     None
                 }
             }
-        } else if let Ok(router_url) = env::var("CHAT2R_ROUTER_URL") {
+        } else if let Ok(router_url) = env::var("ROUTIIUM_ROUTER_URL") {
             tracing::info!("Connecting to remote router: {}", router_url);
-            let timeout_ms = env::var("CHAT2R_ROUTER_TIMEOUT_MS")
+            let timeout_ms = env::var("ROUTIIUM_ROUTER_TIMEOUT_MS")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(15);
 
-            let config = chat2response::router_client::HttpRouterConfig {
+            let config = routiium::router_client::HttpRouterConfig {
                 url: router_url,
                 timeout_ms,
-                mtls: env::var("CHAT2R_ROUTER_MTLS").is_ok(),
+                mtls: env::var("ROUTIIUM_ROUTER_MTLS").is_ok(),
                 client: None,
             };
 
-            match chat2response::router_client::HttpRouterClient::new(config) {
+            match routiium::router_client::HttpRouterClient::new(config) {
                 Ok(client) => {
                     tracing::info!("Connected to remote router");
                     // Wrap with cache
-                    let cache_ttl = env::var("CHAT2R_CACHE_TTL_MS")
+                    let cache_ttl = env::var("ROUTIIUM_CACHE_TTL_MS")
                         .ok()
                         .and_then(|s| s.parse().ok())
                         .unwrap_or(15000);
-                    Some(Arc::new(
-                        chat2response::router_client::CachedRouterClient::new(
-                            Box::new(client),
-                            cache_ttl,
-                        ),
-                    ))
+                    Some(Arc::new(routiium::router_client::CachedRouterClient::new(
+                        Box::new(client),
+                        cache_ttl,
+                    )))
                 }
                 Err(e) => {
                     tracing::error!("Failed to connect to router: {}", e);
@@ -234,7 +232,7 @@ async fn main() -> std::io::Result<()> {
         };
 
     // Initialize analytics manager
-    let analytics = match chat2response::analytics::AnalyticsManager::from_env() {
+    let analytics = match routiium::analytics::AnalyticsManager::from_env() {
         Ok(mgr) => {
             tracing::info!("Analytics initialized successfully");
             Some(Arc::new(mgr))
@@ -247,27 +245,27 @@ async fn main() -> std::io::Result<()> {
     };
 
     // Load pricing configuration
-    let pricing = if let Ok(pricing_path) = env::var("CHAT2RESPONSE_PRICING_CONFIG") {
+    let pricing = if let Ok(pricing_path) = env::var("ROUTIIUM_PRICING_CONFIG") {
         let path = pricing_path.trim();
         if !path.is_empty() {
             tracing::info!("Loading pricing configuration from: {}", path);
-            match chat2response::pricing::PricingConfig::load_from_file(path) {
+            match routiium::pricing::PricingConfig::load_from_file(path) {
                 Ok(config) => {
                     tracing::info!("Pricing configuration loaded");
                     Arc::new(config)
                 }
                 Err(e) => {
                     tracing::warn!("Failed to load pricing config: {}, using defaults", e);
-                    Arc::new(chat2response::pricing::PricingConfig::default())
+                    Arc::new(routiium::pricing::PricingConfig::default())
                 }
             }
         } else {
             tracing::info!("Using default OpenAI pricing");
-            Arc::new(chat2response::pricing::PricingConfig::default())
+            Arc::new(routiium::pricing::PricingConfig::default())
         }
     } else {
         tracing::info!("Using default OpenAI pricing");
-        Arc::new(chat2response::pricing::PricingConfig::default())
+        Arc::new(routiium::pricing::PricingConfig::default())
     };
 
     let app_state = AppState {
@@ -296,7 +294,7 @@ async fn main() -> std::io::Result<()> {
     }
 
     let addr = env_bind_addr();
-    tracing::info!("Chat2Response listening on http://{}", addr);
+    tracing::info!("Routiium listening on http://{}", addr);
 
     let app_state_data = web::Data::new(app_state);
 

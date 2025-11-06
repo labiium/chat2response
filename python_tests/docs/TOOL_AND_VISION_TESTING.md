@@ -1,6 +1,6 @@
 # Tool Calling and Vision Testing Guide
 
-Comprehensive testing methodology for tool calling (function calling) and vision (multimodal) capabilities in chat2response `/v1/responses` endpoint.
+Comprehensive testing methodology for tool calling (function calling) and vision (multimodal) capabilities in routiium `/v1/responses` endpoint.
 
 ## Table of Contents
 
@@ -20,7 +20,7 @@ The `/v1/responses` endpoint supports advanced OpenAI API features including:
 2. **Vision (Multimodal)**: Models can analyze images alongside text
 3. **Combined**: Both features can work together in a single request
 
-These tests validate that chat2response correctly forwards these complex requests to the backend API and returns properly structured responses.
+These tests validate that routiium correctly forwards these complex requests to the backend API and returns properly structured responses.
 
 ## Tool Calling Tests
 
@@ -35,7 +35,7 @@ These tests validate that chat2response correctly forwards these complex request
            │ { "tools": [...], "messages": [...] }
            ▼
 ┌──────────────────────────┐
-│  chat2response           │
+│  routiium           │
 │  (Forward tools)         │
 └──────────┬───────────────┘
            │
@@ -194,7 +194,7 @@ data: [DONE]
            │ { "messages": [{"content": [text, image]}] }
            ▼
 ┌──────────────────────────┐
-│  chat2response           │
+│  routiium           │
 │  (Forward multimodal)    │
 └──────────┬───────────────┘
            │
@@ -370,7 +370,7 @@ messages = [
 cd python_tests
 
 # All Responses API tests (includes tool & vision)
-pytest tests/test_chat2response_integration.py::TestResponsesAPI -v -s
+pytest tests/test_routiium_integration.py::TestResponsesAPI -v -s
 
 # Only tool calling tests
 pytest tests/ -k "tool" -v -s
@@ -681,4 +681,4 @@ Comprehensive testing of tool calling and vision ensures:
 - No conflicts or errors
 - Complex scenarios handled
 
-These tests validate chat2response's ability to proxy advanced OpenAI API features while maintaining reliability and correctness.
+These tests validate routiium's ability to proxy advanced OpenAI API features while maintaining reliability and correctness.

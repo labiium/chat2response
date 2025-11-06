@@ -8,11 +8,11 @@
 /// - Tool/function calling
 /// - Edge cases and validation
 /// - Round-trip conversions
-use chat2response::models::chat::{
+use routiium::models::chat::{
     ChatCompletionRequest, ChatMessage, FunctionDef, ResponseFormat, Role, ToolDefinition,
 };
-use chat2response::models::responses::ResponsesToolDefinition;
-use chat2response::to_responses_request;
+use routiium::models::responses::ResponsesToolDefinition;
+use routiium::to_responses_request;
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -1529,7 +1529,7 @@ mod serialization {
 
 mod response_conversion {
     use super::*;
-    use chat2response::conversion::responses_json_to_chat_request;
+    use routiium::conversion::responses_json_to_chat_request;
 
     #[test]
     fn test_basic_responses_to_chat_conversion() {
@@ -1725,7 +1725,7 @@ mod response_conversion {
 
 mod round_trip {
     use super::*;
-    use chat2response::conversion::responses_json_to_chat_request;
+    use routiium::conversion::responses_json_to_chat_request;
 
     #[test]
     fn test_basic_round_trip() {

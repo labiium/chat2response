@@ -1,22 +1,22 @@
-# Chat2Response
+# Routiium
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 Convert OpenAI Chat Completions requests to the new Responses API format.
 
-Chat2Response bridges the gap between OpenAI's legacy Chat Completions API and the powerful new Responses API. Get all the benefits of the modern API without rewriting your existing Chat Completions code.
+Routiium bridges the gap between OpenAI's legacy Chat Completions API and the powerful new Responses API. Get all the benefits of the modern API without rewriting your existing Chat Completions code.
 
 ## CLI Usage
 
 Run the server:
 ```bash
-chat2response [mcp.json] [--keys-backend=redis://...|sled:<path>|memory] [--system-prompt-config=system_prompt.json]
+routiium [mcp.json] [--keys-backend=redis://...|sled:<path>|memory] [--system-prompt-config=system_prompt.json]
 ```
 
 - `mcp.json` positional: if provided as the first non-flag argument, the server loads and connects to MCP servers defined in that file.
 - `--keys-backend`: selects the API key storage backend at runtime:
 - `--system-prompt-config`: path to system prompt configuration file for automatic prompt injection.
-  - `redis://...` uses Redis with an r2d2 connection pool (pool size via `CHAT2RESPONSE_REDIS_POOL_MAX`).
+  - `redis://...` uses Redis with an r2d2 connection pool (pool size via `ROUTIIUM_REDIS_POOL_MAX`).
   - `sled:<path>` uses an embedded sled database at the given path.
   - `memory` uses an in-memory, non-persistent store.
 
@@ -24,7 +24,7 @@ Backend precedence (highest to lowest):
 
 ## Multi-backend routing (per-model base URLs)
 
-Use the CHAT2RESPONSE_BACKENDS environment variable to route different model prefixes to different provider base URLs and API keys.
+Use the ROUTIIUM_BACKENDS environment variable to route different model prefixes to different provider base URLs and API keys.
 
 Format:
 - Semicolon-separated rules; within each rule, use comma- or semicolon-separated key=value pairs.
@@ -32,7 +32,7 @@ Format:
   - prefix: model prefix to match (starts_with)
   - base or base_url: provider base URL (include /v1 if required)
   - key_env (optional): name of the env var holding the provider API key
-  - mode (optional): responses or chat; defaults to CHAT2RESPONSE_UPSTREAM_MODE or responses
+  - mode (optional): responses or chat; defaults to ROUTIIUM_UPSTREAM_MODE or responses
 
 Example:
 - Route gpt-* to OpenAI, claude-* to Anthropic, and llama* to a local Ollama/vLLM chat endpoint:
@@ -40,62 +40,65 @@ Example:
 ```
 export OPENAI_API_KEY=sk-openai...
 export ANTHROPIC_API_KEY=sk-anthropic...
-export CHAT2RESPONSE_BACKENDS="prefix=gpt-;base=https://api.openai.com/v1;key_env=OPENAI_API_KEY;mode=responses; prefix=claude-;base=https://api.anthropic.com/v1;key_env=ANTHROPIC_API_KEY;mode=responses; prefix=llama;base=http://localhost:11434/v1;mode=chat"
-chat2response
+export ROUTIIUM_BACKENDS="prefix=gpt-;base=https://api.openai.com/v1;key_env=OPENAI_API_KEY;mode=responses; prefix=claude-;base=https://api.anthropic.com/v1;key_env=ANTHROPIC_API_KEY;mode=responses; prefix=llama;base=http://localhost:11434/v1;mode=chat"
+routiium
 ```
 
 Notes:
 - When mode=chat for a rule, the server automatically converts Responses-shaped payloads to Chat Completions for that upstream and calls /v1/chat/completions.
 - Managed auth: when OPENAI_API_KEY is set and you use generated access tokens, the routing layer picks the correct provider key via key_env per rule, so clients never see provider secrets.
 - Passthrough auth: if you don’t run managed auth, the client Bearer is forwarded unless a provider-specific key_env is configured and no client Bearer is provided.
-- Legacy routing: `CHAT2RESPONSE_BACKENDS` remains supported, but new deployments should prefer the schema 1.1 Router integration described below for richer policy control.
+- Legacy routing: `ROUTIIUM_BACKENDS` remains supported, but new deployments should prefer the schema 1.1 Router integration described below for richer policy control.
 1) `--keys-backend=...` (CLI)
-2) `CHAT2RESPONSE_REDIS_URL` (if set, Redis is used)
+2) `ROUTIIUM_REDIS_URL` (if set, Redis is used)
 3) `sled` (embedded; used when no Redis URL is provided)
 4) `memory` (fallback)
 
 Examples:
 - Basic server (no MCP):
 ```bash
-chat2response
+routiium
 ```
 - With MCP configuration file:
 ```bash
-chat2response mcp.json
+routiium mcp.json
 ```
 - Use Redis explicitly (CLI overrides env):
 ```bash
-chat2response --keys-backend=redis://127.0.0.1/
+routiium --keys-backend=redis://127.0.0.1/
 ```
 - Use sled at a custom path:
 ```bash
-chat2response --keys-backend=sled:./data/keys.db
+routiium --keys-backend=sled:./data/keys.db
 ```
 - Force in-memory store (useful for demos/tests):
 ```bash
-chat2response --keys-backend=memory
+routiium --keys-backend=memory
 ```
 - With environment variables:
 ```bash
-CHAT2RESPONSE_REDIS_URL=redis://127.0.0.1/ chat2response
+ROUTIIUM_REDIS_URL=redis://127.0.0.1/ routiium
 ```
 
 ## Router integration (Schema 1.1)
 
-Chat2Response now supports a first-class Router interface for virtual model aliases, stickiness, and policy-driven routing. You can run in three modes:
+Routiium now supports a first-class Router interface for virtual model aliases, stickiness, and policy-driven routing. You can run in three modes:
 
 - **Local**: load a static alias map via `--router-config=router_aliases.json` (see [`router_aliases.json.example`](router_aliases.json.example)).
-- **Remote**: point to a Router service with `CHAT2R_ROUTER_URL` / `CHAT2R_ROUTER_MODE=remote` and follow the v1.1 contract described in [`ROUTER_API_SPEC.md`](ROUTER_API_SPEC.md).
-- **Hybrid**: combine local aliases with a remote Router (`CHAT2R_ROUTER_MODE=hybrid`) for low-latency fallbacks.
+- **Remote**: point to a Router service with `ROUTIIUM_ROUTER_URL` / `ROUTIIUM_ROUTER_MODE=remote` and follow the v1.1 contract described in [`ROUTER_API_SPEC.md`](ROUTER_API_SPEC.md).
+- **Hybrid**: combine local aliases with a remote Router (`ROUTIIUM_ROUTER_MODE=hybrid`) for low-latency fallbacks.
 
 Key environment variables:
 
 ```bash
-CHAT2R_ROUTER_MODE=local|remote|hybrid
-CHAT2R_ROUTER_URL=https://router.internal           # remote/hybrid
-CHAT2R_ROUTER_TIMEOUT_MS=15                         # request budget to router
-CHAT2R_CACHE_TTL_MS=15000                           # plan cache TTL (ms)
-CHAT2R_EXPOSE_ROUTE_HEADERS=1                      # surface X-Route-* headers to clients
+ROUTIIUM_ROUTER_MODE=local|remote|hybrid
+ROUTIIUM_ROUTER_URL=https://router.internal           # remote/hybrid
+ROUTIIUM_ROUTER_TIMEOUT_MS=15                         # request budget to router
+# When set (1/true/yes/on), fail requests if the router has no plan for an alias.
+# Default behaviour falls back to legacy prefix routing.
+ROUTIIUM_ROUTER_STRICT=false
+ROUTIIUM_CACHE_TTL_MS=15000                           # plan cache TTL (ms)
+ROUTIIUM_EXPOSE_ROUTE_HEADERS=1                      # surface X-Route-* headers to clients
 ```
 
 The Router contract uses schema version **1.1**:
@@ -122,27 +125,27 @@ For Router implementers, start with [`ROUTER_API_SPEC.md`](ROUTER_API_SPEC.md) a
 
 ```bash
 # Install from crates.io (preferred)
-cargo install chat2response
+cargo install routiium
 
 # Clone and build (alternative)
-git clone https://github.com/labiium/chat2response
-cd chat2response
+git clone https://github.com/labiium/routiium
+cd routiium
 cargo install --path .
 
 # Start the server (basic mode)
-OPENAI_API_KEY=sk-your-key chat2response
+OPENAI_API_KEY=sk-your-key routiium
 
 # Start with MCP integration
-OPENAI_API_KEY=sk-your-key chat2response mcp.json
+OPENAI_API_KEY=sk-your-key routiium mcp.json
 
 # Start with local router aliases
-OPENAI_API_KEY=sk-your-key chat2response --router-config=router_aliases.json.example
+OPENAI_API_KEY=sk-your-key routiium --router-config=router_aliases.json.example
 
 # Start with remote router (schema 1.1)
-CHAT2R_ROUTER_URL=https://router.internal \
-CHAT2R_ROUTER_MODE=remote \
+ROUTIIUM_ROUTER_URL=https://router.internal \
+ROUTIIUM_ROUTER_MODE=remote \
 OPENAI_API_KEY=sk-your-key \
-chat2response
+routiium
 ```
 
 Server runs at `http://localhost:8088`.
@@ -150,7 +153,7 @@ Server runs at `http://localhost:8088`.
 ### Run with Docker (GHCR)
 
 Official images are published to GitHub Container Registry (GHCR):
-- Image: `ghcr.io/labiium/chat2response`
+- Image: `ghcr.io/labiium/routiium`
 - Tags:
   - `edge` — latest commit on `main`/`master`
   - Release tags — `vX.Y.Z`, `X.Y`, `X`, and `latest` on versioned releases
@@ -158,7 +161,7 @@ Official images are published to GitHub Container Registry (GHCR):
 
 Pull:
 ```bash
-docker pull ghcr.io/labiium/chat2response:edge
+docker pull ghcr.io/labiium/routiium:edge
 ```
 
 Basic run (sled backend with persistent volume):
@@ -166,8 +169,8 @@ Basic run (sled backend with persistent volume):
 docker run --rm -p 8088:8088 \
   -e OPENAI_BASE_URL=https://api.openai.com/v1 \
   -e OPENAI_API_KEY=sk-your-key \
-  -v chat2response-data:/data \
-  ghcr.io/labiium/chat2response:edge
+  -v routiium-data:/data \
+  ghcr.io/labiium/routiium:edge
 ```
 
 Use Redis backend:
@@ -175,14 +178,14 @@ Use Redis backend:
 # macOS/Windows (Docker Desktop)
 docker run --rm -p 8088:8088 \
   -e OPENAI_BASE_URL=https://api.openai.com/v1 \
-  -e CHAT2RESPONSE_REDIS_URL=redis://host.docker.internal:6379/ \
-  ghcr.io/labiium/chat2response:edge --keys-backend=redis://host.docker.internal:6379/
+  -e ROUTIIUM_REDIS_URL=redis://host.docker.internal:6379/ \
+  ghcr.io/labiium/routiium:edge --keys-backend=redis://host.docker.internal:6379/
 
 # Linux (access local Redis)
 docker run --rm --network=host \
   -e OPENAI_BASE_URL=https://api.openai.com/v1 \
-  -e CHAT2RESPONSE_REDIS_URL=redis://127.0.0.1:6379/ \
-  ghcr.io/labiium/chat2response:edge --keys-backend=redis://127.0.0.1:6379/
+  -e ROUTIIUM_REDIS_URL=redis://127.0.0.1:6379/ \
+  ghcr.io/labiium/routiium:edge --keys-backend=redis://127.0.0.1:6379/
 ```
 
 With MCP configuration:
@@ -191,14 +194,14 @@ With MCP configuration:
 docker run --rm -p 8088:8088 \
   -e OPENAI_BASE_URL=https://api.openai.com/v1 \
   -v $(pwd)/mcp.json:/app/mcp.json:ro \
-  -v chat2response-data:/data \
-  ghcr.io/labiium/chat2response:edge /app/mcp.json
+  -v routiium-data:/data \
+  ghcr.io/labiium/routiium:edge /app/mcp.json
 ```
 
 Notes:
 - Defaults inside the image:
   - `BIND_ADDR=0.0.0.0:8088` (listens on all interfaces)
-  - `CHAT2RESPONSE_SLED_PATH=/data/keys.db` (mount a volume for persistence)
+  - `ROUTIIUM_SLED_PATH=/data/keys.db` (mount a volume for persistence)
 - You can pass CLI flags exactly as with the binary (e.g., `--keys-backend=...`).
 - For corporate proxies, set `HTTP_PROXY`/`HTTPS_PROXY` env vars.
 
@@ -258,8 +261,8 @@ curl -N http://localhost:8088/v1/chat/completions \
 Use as a Rust library for in-process conversion:
 
 ```rust
-use chat2response::to_responses_request;
-use chat2response::models::chat::ChatCompletionRequest;
+use routiium::to_responses_request;
+use routiium::models::chat::ChatCompletionRequest;
 
 let chat_request = ChatCompletionRequest { /* ... */ };
 let responses_request = to_responses_request(&chat_request, None);
@@ -277,14 +280,14 @@ OPENAI_BASE_URL=https://api.openai.com/v1        # Upstream base URL (mandatory)
 OPENAI_API_KEY=sk-your-key                       # Used if Authorization header is not provided
 BIND_ADDR=0.0.0.0:8088                           # Server address
 # NOTE: Service mirrors OpenAI endpoints: use /v1/chat/completions for Chat payloads, /v1/responses for native Responses payloads.
-CHAT2RESPONSE_UPSTREAM_INPUT=0                   # If 1/true, derive and send top-level "input" when upstream requires it
+ROUTIIUM_UPSTREAM_INPUT=0                   # If 1/true, derive and send top-level "input" when upstream requires it
 
 # Optional (Proxy/network)
-CHAT2RESPONSE_PROXY_URL=                         # Proxy for all schemes (e.g., http://user:pass@host:port)
+ROUTIIUM_PROXY_URL=                         # Proxy for all schemes (e.g., http://user:pass@host:port)
 HTTP_PROXY=                                      # Standard env var for HTTP proxy
 HTTPS_PROXY=                                     # Standard env var for HTTPS proxy
-CHAT2RESPONSE_NO_PROXY=0                         # If 1/true, disable all proxy usage
-CHAT2RESPONSE_HTTP_TIMEOUT_SECONDS=60            # Global HTTP client timeout (seconds)
+ROUTIIUM_NO_PROXY=0                         # If 1/true, disable all proxy usage
+ROUTIIUM_HTTP_TIMEOUT_SECONDS=60            # Global HTTP client timeout (seconds)
 
 # Optional (CORS)
 CORS_ALLOWED_ORIGINS=*                           # "*" or comma-separated origins
@@ -295,29 +298,29 @@ CORS_MAX_AGE=3600                                # Preflight max-age (seconds)
 
 # Optional (API key management & auth)
 # Backend selection is runtime-based:
-# - If CHAT2RESPONSE_REDIS_URL is set, Redis is used (r2d2 pool).
+# - If ROUTIIUM_REDIS_URL is set, Redis is used (r2d2 pool).
 # - Else, if built with the `sled` feature, sled is used (when present).
 # - Else, in-memory store is used (non-persistent, for dev/tests).
-CHAT2RESPONSE_REDIS_URL=                         # e.g., redis://127.0.0.1/
-CHAT2RESPONSE_REDIS_POOL_MAX=16                  # r2d2 pool max size for Redis
-CHAT2RESPONSE_SLED_PATH=./data/keys.db           # Path for sled data (only when built with sled feature)
+ROUTIIUM_REDIS_URL=                         # e.g., redis://127.0.0.1/
+ROUTIIUM_REDIS_POOL_MAX=16                  # r2d2 pool max size for Redis
+ROUTIIUM_SLED_PATH=./data/keys.db           # Path for sled data (only when built with sled feature)
 
 # Key lifecycle policy
-CHAT2RESPONSE_KEYS_REQUIRE_EXPIRATION=1          # If 1/true, keys must have expiration at creation
-CHAT2RESPONSE_KEYS_ALLOW_NO_EXPIRATION=0         # If 1/true, allow non-expiring keys (not recommended)
-CHAT2RESPONSE_KEYS_DEFAULT_TTL_SECONDS=86400     # Default TTL (seconds) used if not explicitly provided
+ROUTIIUM_KEYS_REQUIRE_EXPIRATION=1          # If 1/true, keys must have expiration at creation
+ROUTIIUM_KEYS_ALLOW_NO_EXPIRATION=0         # If 1/true, allow non-expiring keys (not recommended)
+ROUTIIUM_KEYS_DEFAULT_TTL_SECONDS=86400     # Default TTL (seconds) used if not explicitly provided
 ```
 
 ### API Key Backends
-- Redis: enable by setting `CHAT2RESPONSE_REDIS_URL` at runtime. Pool size via `CHAT2RESPONSE_REDIS_POOL_MAX`.
-- Sled: available when compiled with the `sled` feature; set `CHAT2RESPONSE_SLED_PATH` for database path. Used only if Redis URL is not set.
+- Redis: enable by setting `ROUTIIUM_REDIS_URL` at runtime. Pool size via `ROUTIIUM_REDIS_POOL_MAX`.
+- Sled: available when compiled with the `sled` feature; set `ROUTIIUM_SLED_PATH` for database path. Used only if Redis URL is not set.
 - Memory: fallback non-persistent store for development/testing when neither Redis is configured nor sled is available.
 
 ### API Key Policy
 - Tokens are opaque: `sk_<id>.<secret>` (ID is 32 hex chars, secret is 64 hex chars).
 - Secrets are never stored; verification uses salted `SHA-256(salt || secret)` with constant-time compare.
-- By default, expiration is required at creation (`CHAT2RESPONSE_KEYS_REQUIRE_EXPIRATION=1`), using either `ttl_seconds` or `expires_at`. You can allow non-expiring keys only if `CHAT2RESPONSE_KEYS_ALLOW_NO_EXPIRATION=1`.
-- A default TTL can be set via `CHAT2RESPONSE_KEYS_DEFAULT_TTL_SECONDS`.
+- By default, expiration is required at creation (`ROUTIIUM_KEYS_REQUIRE_EXPIRATION=1`), using either `ttl_seconds` or `expires_at`. You can allow non-expiring keys only if `ROUTIIUM_KEYS_ALLOW_NO_EXPIRATION=1`.
+- A default TTL can be set via `ROUTIIUM_KEYS_DEFAULT_TTL_SECONDS`.
 
 ## API Endpoints
 
@@ -358,7 +361,7 @@ Responses API (Modern)
 - Unified tool and multimodal handling
 - Better for AI agents and complex flows
 
-Chat2Response lets you get Responses API benefits while keeping your existing Chat Completions code.
+Routiium lets you get Responses API benefits while keeping your existing Chat Completions code.
 
 ## Use with vLLM, Ollama & Local Models
 
@@ -369,18 +372,18 @@ Many popular inference servers only support the Chat Completions API:
 - FastChat — Multi-model serving
 - LocalAI — Local OpenAI alternative
 
-Place Chat2Response in front of these services to instantly add Responses API support:
+Place Routiium in front of these services to instantly add Responses API support:
 
 ```bash
 # Point to your local vLLM server
-OPENAI_BASE_URL=http://localhost:8000/v1 chat2response
+OPENAI_BASE_URL=http://localhost:8000/v1 routiium
 ```
 
 Now your local models support the modern Responses API format. Your applications get better streaming, tool traces, and conversation state while your local inference server keeps running unchanged.
 
 ## MCP Integration
 
-Chat2Response can connect to Model Context Protocol (MCP) servers to provide additional tools to the LLM. When MCP servers are configured, their tools are automatically merged with any tools specified in the original request.
+Routiium can connect to Model Context Protocol (MCP) servers to provide additional tools to the LLM. When MCP servers are configured, their tools are automatically merged with any tools specified in the original request.
 
 ### Setting up MCP
 
@@ -414,7 +417,7 @@ Chat2Response can connect to Model Context Protocol (MCP) servers to provide add
 2) Start the server with MCP support:
 
 ```bash
-OPENAI_BASE_URL=https://api.openai.com/v1 chat2response mcp.json
+OPENAI_BASE_URL=https://api.openai.com/v1 routiium mcp.json
 ```
 
 3) Available MCP Servers:
@@ -451,7 +454,7 @@ The LLM will automatically have access to both `brave-search_search` and `filesy
 
 ## Runtime Configuration Reloading
 
-Chat2Response supports **runtime reloading** of both MCP tools and system prompts without restarting the server. This enables dynamic configuration updates in production environments.
+Routiium supports **runtime reloading** of both MCP tools and system prompts without restarting the server. This enables dynamic configuration updates in production environments.
 
 ### MCP Runtime Reload
 
@@ -459,7 +462,7 @@ Once started with an MCP configuration file, you can reload the MCP configuratio
 
 ```bash
 # Start with MCP configuration
-chat2response mcp.json
+routiium mcp.json
 
 # Later, update mcp.json and reload without restarting
 curl -X POST http://localhost:8088/reload/mcp
@@ -511,7 +514,7 @@ System prompts can be injected into all requests automatically. Create a `system
 
 ```bash
 # Start with both MCP and system prompt configurations
-chat2response mcp.json --system-prompt-config=system_prompt.json
+routiium mcp.json --system-prompt-config=system_prompt.json
 ```
 
 ### Reload System Prompts at Runtime
@@ -601,7 +604,7 @@ curl http://localhost:8088/status
 Response includes runtime configuration details:
 ```json
 {
-  "name": "chat2response",
+  "name": "routiium",
   "version": "0.1.1",
   "proxy_enabled": true,
   "routes": [...],
@@ -624,25 +627,25 @@ Response includes runtime configuration details:
 
 From crates.io (binary):
 ```bash
-cargo install chat2response
+cargo install routiium
 ```
 
 Run the CLI:
 ```bash
-OPENAI_API_KEY=sk-your-key chat2response [mcp.json] [--keys-backend=redis://...|sled:<path>|memory]
+OPENAI_API_KEY=sk-your-key routiium [mcp.json] [--keys-backend=redis://...|sled:<path>|memory]
 ```
 
 From source:
 ```bash
-git clone https://github.com/labiium/chat2response
-cd chat2response
+git clone https://github.com/labiium/routiium
+cd routiium
 cargo build --release
 ```
 
 As a library:
 ```toml
 [dependencies]
-chat2response = "0.1"
+routiium = "0.1"
 ```
 
 ## Testing
@@ -653,10 +656,10 @@ cargo test
 
 # With sled backend compiled (optional feature) and custom sled path:
 cargo test --features sled
-CHAT2RESPONSE_SLED_PATH=./tmp/keys.db cargo test --features sled
+ROUTIIUM_SLED_PATH=./tmp/keys.db cargo test --features sled
 
 # With Redis backend at runtime (ensure a local Redis instance is available):
-export CHAT2RESPONSE_REDIS_URL=redis://127.0.0.1/
+export ROUTIIUM_REDIS_URL=redis://127.0.0.1/
 cargo test
 
 # Lints (fail on warnings)
@@ -697,7 +700,7 @@ curl -s -X POST http://localhost:8088/keys/set_expiration \
 
 ## Analytics
 
-Chat2Response includes comprehensive analytics capabilities to track and analyze API usage, performance, and costs.
+Routiium includes comprehensive analytics capabilities to track and analyze API usage, performance, and costs.
 
 ### Configuration
 
@@ -705,22 +708,22 @@ Analytics can use three different storage backends:
 
 1. **Redis** (recommended for production):
 ```bash
-export CHAT2RESPONSE_ANALYTICS_REDIS_URL=redis://localhost:6379
-export CHAT2RESPONSE_ANALYTICS_TTL_SECONDS=2592000  # 30 days
-chat2response
+export ROUTIIUM_ANALYTICS_REDIS_URL=redis://localhost:6379
+export ROUTIIUM_ANALYTICS_TTL_SECONDS=2592000  # 30 days
+routiium
 ```
 
 2. **Sled** (embedded database):
 ```bash
-export CHAT2RESPONSE_ANALYTICS_SLED_PATH=./analytics.db
-export CHAT2RESPONSE_ANALYTICS_TTL_SECONDS=2592000
-chat2response
+export ROUTIIUM_ANALYTICS_SLED_PATH=./analytics.db
+export ROUTIIUM_ANALYTICS_TTL_SECONDS=2592000
+routiium
 ```
 
 3. **Memory** (development only):
 ```bash
-export CHAT2RESPONSE_ANALYTICS_MAX_EVENTS=10000
-chat2response
+export ROUTIIUM_ANALYTICS_MAX_EVENTS=10000
+routiium
 ```
 
 ### Analytics Endpoints
@@ -912,8 +915,8 @@ Create a JSON file with your pricing:
 
 Load it via environment variable:
 ```bash
-export CHAT2RESPONSE_PRICING_CONFIG=/path/to/pricing.json
-chat2response
+export ROUTIIUM_PRICING_CONFIG=/path/to/pricing.json
+routiium
 ```
 
 The pricing system supports:
@@ -924,11 +927,11 @@ The pricing system supports:
 
 ### Environment Variables
 
-- `CHAT2RESPONSE_ANALYTICS_REDIS_URL`: Redis connection URL
-- `CHAT2RESPONSE_ANALYTICS_SLED_PATH`: Path for Sled database
-- `CHAT2RESPONSE_ANALYTICS_MAX_EVENTS`: Max events in memory mode (default: 10000)
-- `CHAT2RESPONSE_ANALYTICS_TTL_SECONDS`: Time-to-live for events in seconds
-- `CHAT2RESPONSE_PRICING_CONFIG`: Path to custom pricing configuration JSON file
+- `ROUTIIUM_ANALYTICS_REDIS_URL`: Redis connection URL
+- `ROUTIIUM_ANALYTICS_SLED_PATH`: Path for Sled database
+- `ROUTIIUM_ANALYTICS_MAX_EVENTS`: Max events in memory mode (default: 10000)
+- `ROUTIIUM_ANALYTICS_TTL_SECONDS`: Time-to-live for events in seconds
+- `ROUTIIUM_PRICING_CONFIG`: Path to custom pricing configuration JSON file
 
 ## Examples
 

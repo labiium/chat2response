@@ -1,7 +1,7 @@
-use chat2response::models::chat::{
+use routiium::models::chat::{
     ChatCompletionRequest, ChatMessage, FunctionDef, ResponseFormat, Role, ToolDefinition,
 };
-use chat2response::to_responses_request;
+use routiium::to_responses_request;
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -195,7 +195,7 @@ fn tools_and_tool_choice_are_forwarded() {
     let tools = out.tools.expect("missing tools");
     assert_eq!(tools.len(), 1);
     match &tools[0] {
-        chat2response::models::responses::ResponsesToolDefinition::Function {
+        routiium::models::responses::ResponsesToolDefinition::Function {
             name,
             description,
             parameters,

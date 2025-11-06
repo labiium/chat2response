@@ -12,7 +12,7 @@ pub mod chat;
 pub mod responses;
 
 // Optional convenience re-exports for downstream users.
-// These allow importing commonly-used types directly from `chat2response::models::*`.
+// These allow importing commonly-used types directly from `routiium::models::*`.
 pub use chat::{
     ChatCompletionRequest, ChatMessage, FunctionDef, ResponseFormat, Role, ToolDefinition,
 };

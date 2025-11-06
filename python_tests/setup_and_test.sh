@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #####################################################################
-# SETUP AND TEST SCRIPT FOR CHAT2RESPONSE PYTHON INTEGRATION TESTS
+# SETUP AND TEST SCRIPT FOR ROUTIIUM PYTHON INTEGRATION TESTS
 #####################################################################
 #
 # This script:
 # 1. Installs uv if not present
 # 2. Sets up Python virtual environment using uv
 # 3. Installs dependencies
-# 4. Starts chat2response server in background
+# 4. Starts routiium server in background
 # 5. Runs integration tests
 # 6. Cleans up background processes
 #
@@ -35,7 +35,7 @@ PYTHON_TESTS_DIR="$SCRIPT_DIR"
 ENV_FILE="$PROJECT_ROOT/.env"
 
 # Server PID file
-SERVER_PID_FILE="/tmp/chat2response_test_server.pid"
+SERVER_PID_FILE="/tmp/routiium_test_server.pid"
 
 #####################################################################
 # UTILITY FUNCTIONS
@@ -60,11 +60,11 @@ log_error() {
 cleanup() {
     log_info "Cleaning up..."
 
-    # Kill chat2response server if running
+    # Kill routiium server if running
     if [ -f "$SERVER_PID_FILE" ]; then
         SERVER_PID=$(cat "$SERVER_PID_FILE")
         if ps -p "$SERVER_PID" > /dev/null 2>&1; then
-            log_info "Stopping chat2response server (PID: $SERVER_PID)"
+            log_info "Stopping routiium server (PID: $SERVER_PID)"
             kill "$SERVER_PID" 2>/dev/null || true
             sleep 2
             # Force kill if still running
@@ -75,7 +75,7 @@ cleanup() {
         rm -f "$SERVER_PID_FILE"
     fi
 
-    # Kill any remaining chat2response processes on port 8099
+    # Kill any remaining routiium processes on port 8099
     lsof -ti:8099 | xargs kill -9 2>/dev/null || true
 }
 
@@ -128,14 +128,14 @@ check_rust_installed() {
     fi
 }
 
-build_chat2response() {
-    log_info "Building chat2response server..."
+build_routiium() {
+    log_info "Building routiium server..."
     cd "$PROJECT_ROOT"
 
     if cargo build --release; then
-        log_success "chat2response built successfully"
+        log_success "routiium built successfully"
     else
-        log_error "Failed to build chat2response"
+        log_error "Failed to build routiium"
         exit 1
     fi
 }
@@ -153,7 +153,7 @@ check_env_file() {
     log_success "Found .env file"
 
     # Validate required environment variables
-    if ! grep -q "OPENAI_API_KEY" "$ENV_FILE" || ! grep -q "CHAT2RESPONSE_BASE" "$ENV_FILE"; then
+    if ! grep -q "OPENAI_API_KEY" "$ENV_FILE" || ! grep -q "ROUTIIUM_BASE" "$ENV_FILE"; then
         log_warning ".env file may be missing required variables"
     fi
 }
@@ -180,8 +180,8 @@ setup_python_env() {
 # SERVER MANAGEMENT
 #####################################################################
 
-start_chat2response_server() {
-    log_info "Starting chat2response server..."
+start_routiium_server() {
+    log_info "Starting routiium server..."
 
     cd "$PROJECT_ROOT"
 
@@ -201,14 +201,22 @@ start_chat2response_server() {
         fi
     done < "$ENV_FILE"
 
+    # Optional router configuration
+    ROUTER_CONFIG_PATH="$PYTHON_TESTS_DIR/router_aliases.json"
+    ROUTER_ARGS=()
+    if [ -f "$ROUTER_CONFIG_PATH" ]; then
+        log_info "Using router config at $ROUTER_CONFIG_PATH"
+        ROUTER_ARGS+=("--router-config=$ROUTER_CONFIG_PATH")
+    fi
+
     # Start server in background
-    ./target/release/chat2response &
+    ./target/release/routiium "${ROUTER_ARGS[@]}" &
     SERVER_PID=$!
 
     # Save PID
     echo "$SERVER_PID" > "$SERVER_PID_FILE"
 
-    log_info "chat2response server started (PID: $SERVER_PID)"
+    log_info "routiium server started (PID: $SERVER_PID)"
 
     # Wait for server to be ready
     log_info "Waiting for server to be ready..."
@@ -273,7 +281,7 @@ run_tests() {
 #####################################################################
 
 main() {
-    log_info "Starting chat2response Python integration test setup"
+    log_info "Starting routiium Python integration test setup"
     echo ""
 
     # Step 1: Check and install uv
@@ -295,9 +303,9 @@ main() {
     check_env_file
     echo ""
 
-    # Step 4: Build chat2response
-    log_info "Step 4: Building chat2response server"
-    build_chat2response
+    # Step 4: Build routiium
+    log_info "Step 4: Building routiium server"
+    build_routiium
     echo ""
 
     # Step 5: Setup Python environment
@@ -306,8 +314,8 @@ main() {
     echo ""
 
     # Step 6: Start server
-    log_info "Step 6: Starting chat2response server"
-    start_chat2response_server
+    log_info "Step 6: Starting routiium server"
+    start_routiium_server
     echo ""
 
     # Step 7: Run tests

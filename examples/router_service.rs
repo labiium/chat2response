@@ -1,23 +1,23 @@
 //! Example Router Service (v0.3)
 //!
 //! A minimal Actix-web implementation of the Router API v0.3.
-//! This demonstrates the Router service contract that Chat2Response integrates with.
+//! This demonstrates the Router service contract that Routiium integrates with.
 //!
 //! Run with:
 //! ```bash
 //! cargo run --example router_service
 //! ```
 //!
-//! Then test with Chat2Response:
+//! Then test with Routiium:
 //! ```bash
-//! CHAT2R_ROUTER_URL=http://localhost:9090 chat2response
+//! ROUTIIUM_ROUTER_URL=http://localhost:9090 routiium
 //! ```
 
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, Responder};
 use std::sync::{Arc, Mutex};
 
-// Re-use types from chat2response
-use chat2response::router_client::{
+// Re-use types from routiium
+use routiium::router_client::{
     CacheControl, Capabilities, CatalogModel, CostCard, ModelCatalog, ModelLimits, PolicyInfo,
     PromptOverlays, RecentMetrics, RouteFeedback, RouteHints, RouteLimits, RoutePlan, RouteRequest,
     SLOs, Stickiness, UpstreamConfig, UpstreamMode,
@@ -502,7 +502,7 @@ async fn main() -> std::io::Result<()> {
     println!();
     println!("Test with:");
     println!("  curl http://localhost:9090/catalog/models | jq");
-    println!("  CHAT2R_ROUTER_URL=http://localhost:9090 chat2response");
+    println!("  ROUTIIUM_ROUTER_URL=http://localhost:9090 routiium");
     println!();
 
     HttpServer::new(move || {

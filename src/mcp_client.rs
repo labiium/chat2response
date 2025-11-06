@@ -103,7 +103,7 @@ impl McpServerClient {
                 "tools": {}
             },
             "clientInfo": {
-                "name": "chat2response",
+                "name": "routiium",
                 "version": env!("CARGO_PKG_VERSION")
             }
         });

@@ -4,7 +4,7 @@
 // These tests verify that the server configuration compiles correctly.
 
 use actix_web::App;
-use chat2response::server::config_routes;
+use routiium::server::config_routes;
 
 #[test]
 fn router_builds() {

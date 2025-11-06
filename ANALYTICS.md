@@ -1,8 +1,8 @@
-# Chat2Response Analytics System
+# Routiium Analytics System
 
 ## Overview
 
-The analytics system provides comprehensive tracking and analysis capabilities for all API requests processed by chat2response. It captures detailed metrics about requests, responses, performance, authentication, and routing.
+The analytics system provides comprehensive tracking and analysis capabilities for all API requests processed by routiium. It captures detailed metrics about requests, responses, performance, authentication, and routing.
 
 ## Architecture
 
@@ -34,7 +34,7 @@ The analytics system provides comprehensive tracking and analysis capabilities f
 Configuration:
 ```bash
 # Optional override
-export CHAT2RESPONSE_ANALYTICS_JSONL_PATH=/var/log/chat2response/analytics.jsonl
+export ROUTIIUM_ANALYTICS_JSONL_PATH=/var/log/routiium/analytics.jsonl
 ```
 
 #### Redis (Recommended for Production)
@@ -45,8 +45,8 @@ export CHAT2RESPONSE_ANALYTICS_JSONL_PATH=/var/log/chat2response/analytics.jsonl
 
 Configuration:
 ```bash
-export CHAT2RESPONSE_ANALYTICS_REDIS_URL=redis://localhost:6379
-export CHAT2RESPONSE_ANALYTICS_TTL_SECONDS=2592000  # 30 days
+export ROUTIIUM_ANALYTICS_REDIS_URL=redis://localhost:6379
+export ROUTIIUM_ANALYTICS_TTL_SECONDS=2592000  # 30 days
 ```
 
 #### Sled (Embedded Database)
@@ -57,8 +57,8 @@ export CHAT2RESPONSE_ANALYTICS_TTL_SECONDS=2592000  # 30 days
 
 Configuration:
 ```bash
-export CHAT2RESPONSE_ANALYTICS_SLED_PATH=./analytics.db
-export CHAT2RESPONSE_ANALYTICS_TTL_SECONDS=2592000
+export ROUTIIUM_ANALYTICS_SLED_PATH=./analytics.db
+export ROUTIIUM_ANALYTICS_TTL_SECONDS=2592000
 ```
 
 #### Memory (Development Only)
@@ -69,8 +69,8 @@ export CHAT2RESPONSE_ANALYTICS_TTL_SECONDS=2592000
 
 Configuration:
 ```bash
-export CHAT2RESPONSE_ANALYTICS_FORCE_MEMORY=true
-export CHAT2RESPONSE_ANALYTICS_MAX_EVENTS=10000
+export ROUTIIUM_ANALYTICS_FORCE_MEMORY=true
+export ROUTIIUM_ANALYTICS_MAX_EVENTS=10000
 ```
 
 ## Data Model
@@ -325,17 +325,17 @@ def get_metrics():
     resp = requests.get(f"http://localhost:8088/analytics/aggregate?start={hour_ago}&end={now}")
     data = resp.json()
     
-    print(f"# HELP chat2response_requests_total Total requests")
-    print(f"# TYPE chat2response_requests_total counter")
-    print(f"chat2response_requests_total {data['total_requests']}")
+    print(f"# HELP routiium_requests_total Total requests")
+    print(f"# TYPE routiium_requests_total counter")
+    print(f"routiium_requests_total {data['total_requests']}")
     
-    print(f"# HELP chat2response_tokens_input_total Total input tokens")
-    print(f"# TYPE chat2response_tokens_input_total counter")
-    print(f"chat2response_tokens_input_total {data['total_input_tokens']}")
+    print(f"# HELP routiium_tokens_input_total Total input tokens")
+    print(f"# TYPE routiium_tokens_input_total counter")
+    print(f"routiium_tokens_input_total {data['total_input_tokens']}")
     
-    print(f"# HELP chat2response_tokens_output_total Total output tokens")
-    print(f"# TYPE chat2response_tokens_output_total counter")
-    print(f"chat2response_tokens_output_total {data['total_output_tokens']}")
+    print(f"# HELP routiium_tokens_output_total Total output tokens")
+    print(f"# TYPE routiium_tokens_output_total counter")
+    print(f"routiium_tokens_output_total {data['total_output_tokens']}")
 ```
 
 ### Grafana Dashboard

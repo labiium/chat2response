@@ -1,6 +1,6 @@
-# Chat2Response – API Reference
+# Routiium – API Reference
 
-Chat2Response is an HTTP service that:
+Routiium is an HTTP service that:
 - Converts OpenAI Chat Completions requests into the modern OpenAI Responses API payloads.
 - Proxies both Chat Completions and Responses requests to one or more upstream providers.
 - Optionally injects system prompts per model/API at runtime.
@@ -15,7 +15,7 @@ Content-Type: application/json unless otherwise specified
 
 ## Authentication
 
-Chat2Response supports two modes:
+Routiium supports two modes:
 
 1) Managed mode (recommended)
 - Condition: Server has OPENAI_API_KEY set.
@@ -42,19 +42,19 @@ Error responses:
 
 You can route requests by model prefix and optionally translate payloads when the upstream only supports Chat Completions:
 
-- CHAT2RESPONSE_BACKENDS rules (semicolon-separated):
+- ROUTIIUM_BACKENDS rules (semicolon-separated):
   - prefix=<model_prefix>
   - base|base_url=<upstream_base_url>
   - key_env|api_key_env=<ENV_VAR_WITH_API_KEY> (optional)
   - mode=responses|chat (optional; default from env; for /v1/responses non-stream calls, “chat” will translate the payload into Chat Completions form)
 
 Example:
-CHAT2RESPONSE_BACKENDS="gpt-4o,base=https://api.openai.com/v1,mode=responses;local-,base=http://localhost:8000/v1,key_env=LOCAL_API_KEY,mode=chat"
+ROUTIIUM_BACKENDS="gpt-4o,base=https://api.openai.com/v1,mode=responses;local-,base=http://localhost:8000/v1,key_env=LOCAL_API_KEY,mode=chat"
 
 
 ## System Prompt Injection
 
-If a system prompt config is loaded, Chat2Response can inject system prompts:
+If a system prompt config is loaded, Routiium can inject system prompts:
 - For /v1/responses: injects a {"role":"system","content":"..."} message into messages based on injection_mode: prepend (default), append, or replace.
 - For /v1/chat/completions: injects a system message by re-serializing the chat payload.
 
@@ -104,7 +104,7 @@ curl -s http://localhost:PORT/status | jq
 Example response:
 ```json
 {
-  "name": "chat2response",
+  "name": "routiium",
   "version": "x.y.z",
   "proxy_enabled": true,
   "routes": ["/status", "/convert", "/v1/chat/completions", "/v1/responses", "..."],
@@ -234,8 +234,8 @@ Shared types (typical):
 - ApiKeyInfo: { id, label?, created_at, expires_at?, revoked_at?, scopes? }
 
 Environment variables:
-- CHAT2RESPONSE_KEYS_REQUIRE_EXPIRATION: "1|true|yes|on" to require expiration when generating.
-- CHAT2RESPONSE_KEYS_DEFAULT_TTL_SECONDS: default TTL in seconds when not provided in request.
+- ROUTIIUM_KEYS_REQUIRE_EXPIRATION: "1|true|yes|on" to require expiration when generating.
+- ROUTIIUM_KEYS_DEFAULT_TTL_SECONDS: default TTL in seconds when not provided in request.
 
 ### GET /keys
 
@@ -542,10 +542,10 @@ curl -s -X POST http://localhost:PORT/v1/chat/completions \
 # Environment Variables (selected)
 
 - OPENAI_API_KEY – Enables managed mode; used as default upstream key if not overridden by routing.
-- CHAT2RESPONSE_BACKENDS – Multi-backend routing config; see “Routing and Multi-backend”.
-- CHAT2RESPONSE_KEYS_REQUIRE_EXPIRATION – Require expiration when generating keys ("1|true|yes|on").
-- CHAT2RESPONSE_KEYS_DEFAULT_TTL_SECONDS – Default TTL for key generation.
-- CHAT2RESPONSE_PRICING_CONFIG – Optional pricing JSON file to enable cost tracking aligned with your provider list.
+- ROUTIIUM_BACKENDS – Multi-backend routing config; see “Routing and Multi-backend”.
+- ROUTIIUM_KEYS_REQUIRE_EXPIRATION – Require expiration when generating keys ("1|true|yes|on").
+- ROUTIIUM_KEYS_DEFAULT_TTL_SECONDS – Default TTL for key generation.
+- ROUTIIUM_PRICING_CONFIG – Optional pricing JSON file to enable cost tracking aligned with your provider list.
 
 Notes:
 - In managed mode, an Authorization bearer is mandatory and is validated; the upstream provider key is selected by routing (key_env if configured, else OPENAI_API_KEY).

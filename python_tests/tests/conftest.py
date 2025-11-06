@@ -1,5 +1,5 @@
 """
-Pytest configuration and shared fixtures for chat2response integration tests.
+Pytest configuration and shared fixtures for routiium integration tests.
 
 This module sets up authentication tokens for testing in managed mode.
 """
@@ -23,7 +23,7 @@ def setup_test_api_key():
     access token that all tests can use. The token is stored in an
     environment variable.
     """
-    base_url = os.getenv("CHAT2RESPONSE_BASE", "http://127.0.0.1:8099")
+    base_url = os.getenv("ROUTIIUM_BASE", "http://127.0.0.1:8099")
 
     # Generate a temporary access token
     try:
@@ -43,7 +43,7 @@ def setup_test_api_key():
             )
 
         # Store the access token for tests to use
-        os.environ["CHAT2RESPONSE_ACCESS_TOKEN"] = access_token
+        os.environ["ROUTIIUM_ACCESS_TOKEN"] = access_token
         print(f"\n✓ Generated test access token: {access_token[:20]}...")
 
         yield access_token

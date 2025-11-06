@@ -1,6 +1,6 @@
 #!/bin/bash
 echo "========================================="
-echo "CHAT2RESPONSE TEST SUMMARY"
+echo "ROUTIIUM TEST SUMMARY"
 echo "========================================="
 echo ""
 echo "Running all tests..."

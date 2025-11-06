@@ -253,10 +253,10 @@ impl AnalyticsManager {
     /// Create from environment configuration
     pub fn from_env() -> Result<Self, AnalyticsError> {
         // Check for Redis URL
-        if let Ok(url) = std::env::var("CHAT2RESPONSE_ANALYTICS_REDIS_URL") {
+        if let Ok(url) = std::env::var("ROUTIIUM_ANALYTICS_REDIS_URL") {
             let url = url.trim();
             if !url.is_empty() {
-                let ttl = std::env::var("CHAT2RESPONSE_ANALYTICS_TTL_SECONDS")
+                let ttl = std::env::var("ROUTIIUM_ANALYTICS_TTL_SECONDS")
                     .ok()
                     .and_then(|s| s.parse().ok());
                 return Self::new_redis(url, ttl);
@@ -265,10 +265,10 @@ impl AnalyticsManager {
 
         // Check for Sled path
         #[cfg(feature = "sled")]
-        if let Ok(path) = std::env::var("CHAT2RESPONSE_ANALYTICS_SLED_PATH") {
+        if let Ok(path) = std::env::var("ROUTIIUM_ANALYTICS_SLED_PATH") {
             let path = path.trim();
             if !path.is_empty() {
-                let ttl = std::env::var("CHAT2RESPONSE_ANALYTICS_TTL_SECONDS")
+                let ttl = std::env::var("ROUTIIUM_ANALYTICS_TTL_SECONDS")
                     .ok()
                     .and_then(|s| s.parse().ok());
                 return Self::new_sled(path, ttl);
@@ -276,7 +276,7 @@ impl AnalyticsManager {
         }
 
         // Check for JSONL path
-        if let Ok(path) = std::env::var("CHAT2RESPONSE_ANALYTICS_JSONL_PATH") {
+        if let Ok(path) = std::env::var("ROUTIIUM_ANALYTICS_JSONL_PATH") {
             let path = path.trim();
             if !path.is_empty() {
                 return Self::new_jsonl(path);
@@ -284,7 +284,7 @@ impl AnalyticsManager {
         }
 
         // Allow forcing the legacy in-memory backend
-        let force_memory = std::env::var("CHAT2RESPONSE_ANALYTICS_FORCE_MEMORY")
+        let force_memory = std::env::var("ROUTIIUM_ANALYTICS_FORCE_MEMORY")
             .ok()
             .map(|v| {
                 let normalized = v.trim().to_ascii_lowercase();
@@ -293,7 +293,7 @@ impl AnalyticsManager {
             .unwrap_or(false);
 
         if force_memory {
-            let max_events = std::env::var("CHAT2RESPONSE_ANALYTICS_MAX_EVENTS")
+            let max_events = std::env::var("ROUTIIUM_ANALYTICS_MAX_EVENTS")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(10000);
@@ -307,7 +307,7 @@ impl AnalyticsManager {
             Err(err) => {
                 // Final fallback to in-memory if JSONL initialization fails
                 tracing::warn!("Failed to initialize JSONL analytics backend: {}", err);
-                let max_events = std::env::var("CHAT2RESPONSE_ANALYTICS_MAX_EVENTS")
+                let max_events = std::env::var("ROUTIIUM_ANALYTICS_MAX_EVENTS")
                     .ok()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(10000);

@@ -1,23 +1,23 @@
 [package]
-name = "chat2response"
+name = "routiium"
 version = "0.1.1"
 edition = "2021"
 description = "Translate and proxy OpenAI Chat Completions requests to the Responses API."
 license = "Apache-2.0"
 readme = "README.md"
-homepage = "https://github.com/labiium/chat2response"
-repository = "https://github.com/labiium/chat2response"
-authors = ["Chat2Response Contributors"]
+homepage = "https://github.com/labiium/routiium"
+repository = "https://github.com/labiium/routiium"
+authors = ["Routiium Contributors"]
 categories = ["api-bindings", "web-programming::http-server"]
 keywords = ["openai", "responses", "chat-completions", "proxy", "converter"]
 
 
 [lib]
-name = "chat2response"
+name = "routiium"
 path = "src/lib.rs"
 
 [[bin]]
-name = "chat2response"
+name = "routiium"
 path = "src/main.rs"
 
 

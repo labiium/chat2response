@@ -3,7 +3,7 @@
 Probe OpenAI Python SDK for Responses API support.
 
 This script checks if the OpenAI Python SDK has native support for the
-Responses API endpoint (/v1/responses) that chat2response proxies.
+Responses API endpoint (/v1/responses) that routiium proxies.
 """
 
 import sys

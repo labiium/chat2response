@@ -1,6 +1,6 @@
 use actix_web::{test, web, App};
-use chat2response::server::config_routes;
-use chat2response::util::AppState;
+use routiium::server::config_routes;
+use routiium::util::AppState;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -181,8 +181,7 @@ async fn test_convert_with_system_prompt() {
 
     // Load the config
     let loaded_config =
-        chat2response::system_prompt_config::SystemPromptConfig::load_from_file(&config_path)
-            .unwrap();
+        routiium::system_prompt_config::SystemPromptConfig::load_from_file(&config_path).unwrap();
     app_state.system_prompt_config = Arc::new(tokio::sync::RwLock::new(loaded_config));
 
     let app = test::init_service(

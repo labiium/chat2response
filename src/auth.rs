@@ -1,4 +1,4 @@
-/* chat2response/src/auth.rs
+/* routiium/src/auth.rs
 
 Refactored Auth module with pluggable storage backends and async-ready API.
 
@@ -15,11 +15,11 @@ Token design:
 - Expiration is enforced at creation-time by default (configurable).
 
 Environment variables:
-- CHAT2RESPONSE_KEYS_REQUIRE_EXPIRATION = 1|true|yes|on (default: false)
-- CHAT2RESPONSE_KEYS_ALLOW_NO_EXPIRATION = 1|true|yes|on (default: false)
-- CHAT2RESPONSE_KEYS_DEFAULT_TTL_SECONDS = <u64 seconds> (optional default)
-- CHAT2RESPONSE_SLED_PATH = ./data/keys.db (path for sled)
-- CHAT2RESPONSE_REDIS_URL = redis://127.0.0.1/ (url for Redis)
+- ROUTIIUM_KEYS_REQUIRE_EXPIRATION = 1|true|yes|on (default: false)
+- ROUTIIUM_KEYS_ALLOW_NO_EXPIRATION = 1|true|yes|on (default: false)
+- ROUTIIUM_KEYS_DEFAULT_TTL_SECONDS = <u64 seconds> (optional default)
+- ROUTIIUM_SLED_PATH = ./data/keys.db (path for sled)
+- ROUTIIUM_REDIS_URL = redis://127.0.0.1/ (url for Redis)
 
 Public API (kept compatible with previous module where possible):
 - Types: ApiKeyInfo, GeneratedKey, Verification
@@ -134,7 +134,7 @@ mod sled_store_impl {
 
     impl SledStore {
         pub fn open_default() -> Result<Self> {
-            let path = std::env::var("CHAT2RESPONSE_SLED_PATH")
+            let path = std::env::var("ROUTIIUM_SLED_PATH")
                 .ok()
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| "./data/keys.db".to_string());
@@ -242,7 +242,7 @@ mod redis_store_impl {
 
     impl RedisStore {
         pub fn connect_default() -> Result<Self> {
-            let url = std::env::var("CHAT2RESPONSE_REDIS_URL")
+            let url = std::env::var("ROUTIIUM_REDIS_URL")
                 .unwrap_or_else(|_| "redis://127.0.0.1/".to_string());
             Self::connect_url(&url)
         }
@@ -250,14 +250,14 @@ mod redis_store_impl {
         pub fn connect_url(url: &str) -> Result<Self> {
             let client = redis::Client::open(url)?;
             let manager = RedisConnectionManager { client };
-            let max_size = std::env::var("CHAT2RESPONSE_REDIS_POOL_MAX")
+            let max_size = std::env::var("ROUTIIUM_REDIS_POOL_MAX")
                 .ok()
                 .and_then(|s| s.trim().parse::<u32>().ok())
                 .unwrap_or(16);
             let pool = r2d2::Pool::builder().max_size(max_size).build(manager)?;
             Ok(Self {
                 pool,
-                key_ns: "chat2response:keys:".to_string(),
+                key_ns: "routiium:keys:".to_string(),
             })
         }
 
@@ -381,7 +381,7 @@ mod memory_store_impl {
 
 // Select the default make_store() according to enabled features (priority: redis > sled > memory)
 fn make_default_store() -> Result<Arc<dyn KeyStore>> {
-    if let Ok(url) = std::env::var("CHAT2RESPONSE_REDIS_URL") {
+    if let Ok(url) = std::env::var("ROUTIIUM_REDIS_URL") {
         let u = url.trim();
         if !u.is_empty() {
             return redis_store_impl::make_store_with_url(u);
@@ -442,11 +442,11 @@ impl AuthManager {
     ) -> Result<GeneratedKey> {
         let created_at = now_epoch();
         // Policy: enforce expiration by default; allow override by env flags
-        let require_exp = env_truthy("CHAT2RESPONSE_KEYS_REQUIRE_EXPIRATION", false);
-        let allow_no_exp = env_truthy("CHAT2RESPONSE_KEYS_ALLOW_NO_EXPIRATION", false);
+        let require_exp = env_truthy("ROUTIIUM_KEYS_REQUIRE_EXPIRATION", false);
+        let allow_no_exp = env_truthy("ROUTIIUM_KEYS_ALLOW_NO_EXPIRATION", false);
 
         // Optional default TTL
-        let default_ttl = std::env::var("CHAT2RESPONSE_KEYS_DEFAULT_TTL_SECONDS")
+        let default_ttl = std::env::var("ROUTIIUM_KEYS_DEFAULT_TTL_SECONDS")
             .ok()
             .and_then(|s| s.trim().parse::<u64>().ok())
             .map(Duration::from_secs);

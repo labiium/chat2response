@@ -17,7 +17,7 @@
 /// - All environment variables (OPENAI_BASE_URL, OPENAI_API_KEY, MODEL) are required
 /// - Tests will skip if OPENAI_API_KEY is not set
 /// - These tests will consume API credits
-use chat2response::{
+use routiium::{
     chat::{ChatCompletionRequest, ChatMessage, FunctionDef, Role, ToolDefinition},
     to_responses_request,
 };

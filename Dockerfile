@@ -18,7 +18,7 @@ COPY src ./src
 
 # Build release binary and strip symbols to reduce size
 RUN cargo build --release --locked \
-    && strip target/release/chat2response
+    && strip target/release/routiium
 
 # ---------- Runtime stage ----------
 FROM debian:bookworm-slim AS runtime
@@ -38,7 +38,7 @@ RUN useradd -u 10001 -ms /bin/bash app \
 WORKDIR /app
 
 # Copy the built binary
-COPY --from=builder /build/target/release/chat2response /usr/local/bin/chat2response
+COPY --from=builder /build/target/release/routiium /usr/local/bin/routiium
 
 # Run as non-root
 USER app
@@ -46,7 +46,7 @@ USER app
 # Sensible defaults (override via `docker run -e KEY=VAL ...`)
 ENV RUST_LOG=info \
     BIND_ADDR=0.0.0.0:8088 \
-    CHAT2RESPONSE_SLED_PATH=/data/keys.db
+    ROUTIIUM_SLED_PATH=/data/keys.db
 
 # Persist sled data outside the container
 VOLUME ["/data"]
@@ -55,7 +55,7 @@ VOLUME ["/data"]
 EXPOSE 8088
 
 # Entrypoint: pass CLI args to select backend or MCP config, e.g.:
-#   docker run ... chat2response --keys-backend=redis://127.0.0.1/
-#   docker run ... chat2response mcp.json
-ENTRYPOINT ["chat2response"]
+#   docker run ... routiium --keys-backend=redis://127.0.0.1/
+#   docker run ... routiium mcp.json
+ENTRYPOINT ["routiium"]
 CMD []

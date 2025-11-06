@@ -1,4 +1,4 @@
-use chat2response::models::chat::{ChatCompletionRequest, ChatMessage, Role};
+use routiium::models::chat::{ChatCompletionRequest, ChatMessage, Role};
 use serde_json::Value;
 
 mod util;

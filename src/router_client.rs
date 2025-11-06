@@ -2,7 +2,7 @@
 //!
 //! Provides a clean interface for delegating model selection and routing decisions
 //! to a Router service (local or remote), enabling virtual model aliases and
-//! sophisticated routing policies without embedding policy logic in Chat2Response.
+//! sophisticated routing policies without embedding policy logic in Routiium.
 //!
 //! ## Architecture
 //!

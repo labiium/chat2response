@@ -112,9 +112,9 @@ pub enum UpstreamMode {
     Chat,
 }
 
-/// Read CHAT2RESPONSE_UPSTREAM_MODE from env ("responses" | "chat"), default "responses".
+/// Read ROUTIIUM_UPSTREAM_MODE from env ("responses" | "chat"), default "responses".
 pub fn upstream_mode_from_env() -> UpstreamMode {
-    match std::env::var("CHAT2RESPONSE_UPSTREAM_MODE")
+    match std::env::var("ROUTIIUM_UPSTREAM_MODE")
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase()
@@ -164,23 +164,23 @@ pub struct AppState {
 /// Build an HTTP client honoring proxy and timeout environment variables.
 ///
 /// Environment:
-/// - CHAT2RESPONSE_NO_PROXY = 1|true|yes|on  -> disable all proxies
-/// - CHAT2RESPONSE_PROXY_URL = <url>         -> proxy for all schemes
+/// - ROUTIIUM_NO_PROXY = 1|true|yes|on  -> disable all proxies
+/// - ROUTIIUM_PROXY_URL = <url>         -> proxy for all schemes
 /// - HTTP_PROXY / http_proxy                 -> HTTP proxy
 /// - HTTPS_PROXY / https_proxy               -> HTTPS proxy
-/// - CHAT2RESPONSE_HTTP_TIMEOUT_SECONDS      -> overall request timeout (u64)
+/// - ROUTIIUM_HTTP_TIMEOUT_SECONDS      -> overall request timeout (u64)
 pub fn build_http_client_from_env() -> reqwest::Client {
     let mut builder = reqwest::Client::builder();
 
     // Optional timeout
-    if let Ok(secs) = std::env::var("CHAT2RESPONSE_HTTP_TIMEOUT_SECONDS") {
+    if let Ok(secs) = std::env::var("ROUTIIUM_HTTP_TIMEOUT_SECONDS") {
         if let Ok(n) = secs.trim().parse::<u64>() {
             builder = builder.timeout(std::time::Duration::from_secs(n));
         }
     }
 
     // Proxy configuration
-    let no_proxy = std::env::var("CHAT2RESPONSE_NO_PROXY")
+    let no_proxy = std::env::var("ROUTIIUM_NO_PROXY")
         .map(|v| v.trim().to_ascii_lowercase())
         .map(|v| v == "1" || v == "true" || v == "yes" || v == "on")
         .unwrap_or(false);
@@ -189,7 +189,7 @@ pub fn build_http_client_from_env() -> reqwest::Client {
         builder = builder.no_proxy();
     } else {
         // All-scheme proxy
-        if let Ok(url) = std::env::var("CHAT2RESPONSE_PROXY_URL") {
+        if let Ok(url) = std::env::var("ROUTIIUM_PROXY_URL") {
             let u = url.trim();
             if !u.is_empty() {
                 if let Ok(p) = reqwest::Proxy::all(u) {
@@ -218,7 +218,7 @@ pub fn build_http_client_from_env() -> reqwest::Client {
     }
 
     // User-Agent for observability
-    builder = builder.user_agent(format!("chat2response/{}", env!("CARGO_PKG_VERSION")));
+    builder = builder.user_agent(format!("routiium/{}", env!("CARGO_PKG_VERSION")));
 
     builder.build().unwrap_or_else(|_| reqwest::Client::new())
 }
@@ -229,7 +229,7 @@ impl Default for AppState {
             http: build_http_client_from_env(),
             mcp_manager: None,
             api_keys: (|| {
-                if let Ok(url) = std::env::var("CHAT2RESPONSE_REDIS_URL") {
+                if let Ok(url) = std::env::var("ROUTIIUM_REDIS_URL") {
                     let u = url.trim().to_string();
                     if !u.is_empty() {
                         if let Ok(m) = crate::auth::ApiKeyManager::new_with_redis_url(&u) {
@@ -266,7 +266,7 @@ impl AppState {
             http: build_http_client_from_env(),
             mcp_manager: Some(std::sync::Arc::new(tokio::sync::RwLock::new(mcp_manager))),
             api_keys: (|| {
-                if let Ok(url) = std::env::var("CHAT2RESPONSE_REDIS_URL") {
+                if let Ok(url) = std::env::var("ROUTIIUM_REDIS_URL") {
                     let u = url.trim().to_string();
                     if !u.is_empty() {
                         if let Ok(m) = crate::auth::ApiKeyManager::new_with_redis_url(&u) {
@@ -304,7 +304,7 @@ impl AppState {
             http: build_http_client_from_env(),
             mcp_manager: Some(mcp_manager),
             api_keys: (|| {
-                if let Ok(url) = std::env::var("CHAT2RESPONSE_REDIS_URL") {
+                if let Ok(url) = std::env::var("ROUTIIUM_REDIS_URL") {
                     let u = url.trim().to_string();
                     if !u.is_empty() {
                         if let Ok(m) = crate::auth::ApiKeyManager::new_with_redis_url(&u) {
@@ -360,14 +360,23 @@ pub fn error_response(status: StatusCode, msg: &str) -> HttpResponse {
 
 /// Resolve the OpenAI base URL from environment or use the default public endpoint.
 pub fn openai_base_url() -> String {
-    std::env::var("OPENAI_BASE_URL").expect("OPENAI_BASE_URL not set (mandatory)")
+    match std::env::var("OPENAI_BASE_URL") {
+        Ok(val) if !val.trim().is_empty() => val,
+        _ => {
+            static LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            LOGGED.get_or_init(|| {
+                tracing::warn!("OPENAI_BASE_URL not set; defaulting to https://api.openai.com/v1");
+            });
+            "https://api.openai.com/v1".into()
+        }
+    }
 }
 
 /// Forward a request upstream with streaming enabled and return an SSE response.
 ///
 /// Behavior:
 /// - Default: POST to `{base_url}/responses` with Responses-shaped payload.
-/// - If CHAT2RESPONSE_UPSTREAM_MODE=chat: rewrite to `/chat/completions` and translate payload to Chat.
+/// - If ROUTIIUM_UPSTREAM_MODE=chat: rewrite to `/chat/completions` and translate payload to Chat.
 ///   This enables vLLM/Ollama upstreams while keeping a Responses surface.
 ///
 /// Note: For very long streams, consider a true streaming passthrough.
@@ -442,15 +451,15 @@ pub async fn sse_proxy_stream(
         .streaming(stream))
 }
 
-/// Multi-backend routing based on model prefixes declared in CHAT2RESPONSE_BACKENDS.
+/// Multi-backend routing based on model prefixes declared in ROUTIIUM_BACKENDS.
 /// Format (semicolon-separated rules; commas within a rule):
-///   CHAT2RESPONSE_BACKENDS="prefix=gpt-;base=https://api.openai.com/v1;key_env=OPENAI_API_KEY;mode=responses; prefix=claude-;base=https://api.anthropic.com/v1;key_env=ANTHROPIC_API_KEY;mode=responses; prefix=llama;base=http://localhost:11434/v1;mode=chat"
+///   ROUTIIUM_BACKENDS="prefix=gpt-;base=https://api.openai.com/v1;key_env=OPENAI_API_KEY;mode=responses; prefix=claude-;base=https://api.anthropic.com/v1;key_env=ANTHROPIC_API_KEY;mode=responses; prefix=llama;base=http://localhost:11434/v1;mode=chat"
 ///
 /// Notes:
 /// - prefix: string matched with starts_with against the request's model
 /// - base: provider base URL (include /v1 if required by provider)
 /// - key_env (optional): env var name that holds the upstream API key for this provider
-/// - mode (optional): "responses" or "chat" (defaults to CHAT2RESPONSE_UPSTREAM_MODE or "responses")
+/// - mode (optional): "responses" or "chat" (defaults to ROUTIIUM_UPSTREAM_MODE or "responses")
 #[derive(Debug, Clone)]
 struct BackendRule {
     prefix: String,
@@ -477,7 +486,7 @@ fn parse_mode(s: &str) -> Option<UpstreamMode> {
 
 fn backends_from_env() -> Vec<BackendRule> {
     let mut out = Vec::new();
-    let raw = match std::env::var("CHAT2RESPONSE_BACKENDS") {
+    let raw = match std::env::var("ROUTIIUM_BACKENDS") {
         Ok(s) => s,
         Err(_) => return out,
     };
@@ -542,7 +551,7 @@ fn resolve_backend_for_model(model: Option<&str>) -> Option<ResolvedBackend> {
 
 /// Streaming helper that auto-resolves backend based on model from payload.
 /// Honors explicit bearer argument; if absent, uses provider-specific key_env or OPENAI_API_KEY.
-/// Endpoint path is selected by provider rule.mode (or CHAT2RESPONSE_UPSTREAM_MODE).
+/// Endpoint path is selected by provider rule.mode (or ROUTIIUM_UPSTREAM_MODE).
 pub async fn sse_proxy_stream_with_bearer_routed(
     client: &reqwest::Client,
     payload: &serde_json::Value,

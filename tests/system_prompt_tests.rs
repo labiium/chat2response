@@ -1,7 +1,7 @@
-use chat2response::conversion::{inject_system_prompt, inject_system_prompt_chat};
-use chat2response::models::chat::{ChatCompletionRequest, ChatMessage, Role};
-use chat2response::models::responses::ResponsesMessage;
-use chat2response::system_prompt_config::SystemPromptConfig;
+use routiium::conversion::{inject_system_prompt, inject_system_prompt_chat};
+use routiium::models::chat::{ChatCompletionRequest, ChatMessage, Role};
+use routiium::models::responses::ResponsesMessage;
+use routiium::system_prompt_config::SystemPromptConfig;
 use serde_json::json;
 use std::collections::HashMap;
 

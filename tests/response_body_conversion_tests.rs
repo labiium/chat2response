@@ -7,7 +7,7 @@
 /// - Output array item handling (reasoning, tool_calls, etc.)
 /// - Streaming chunk conversion
 /// - Error response handling
-use chat2response::{
+use routiium::{
     chat::{
         ChatChoice, ChatCompletionResponse, ChatResponseMessage, ChatUsage, FunctionCall, ToolCall,
     },

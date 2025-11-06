@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 #![doc = r#"
-Chat2Response
+Routiium
 
 Translate OpenAI Chat Completions requests into Responses API payloads and proxy them to OpenAI's Responses endpoint.
 
@@ -53,5 +53,5 @@ pub use crate::conversion::{
     to_responses_request,
 };
 
-// Re-export model namespaces for convenience (downstream users can do `use chat2response::chat`).
+// Re-export model namespaces for convenience (downstream users can do `use routiium::chat`).
 pub use crate::models::{chat, responses};
