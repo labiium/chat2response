@@ -733,7 +733,7 @@ pub fn to_responses_request(
     let tool_choice = src
         .tool_choice
         .as_ref()
-        .map(|tc| map_tool_choice_for_responses(tc));
+        .map(map_tool_choice_for_responses);
 
     resp::ResponsesRequest {
         model: src.model.clone(),
