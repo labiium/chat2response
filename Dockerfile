@@ -56,6 +56,6 @@ EXPOSE 8088
 
 # Entrypoint: pass CLI args to select backend or MCP config, e.g.:
 #   docker run ... routiium --keys-backend=redis://127.0.0.1/
-#   docker run ... routiium mcp.json
+#   docker run ... routiium --mcp-config=mcp.json
 ENTRYPOINT ["routiium"]
 CMD []

@@ -13,7 +13,7 @@ use routiium::models::chat::{
 };
 use routiium::models::responses::ResponsesToolDefinition;
 use routiium::to_responses_request;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 
 // ============================================================================
@@ -32,6 +32,7 @@ mod request_conversion {
                 content: json!("Hello"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -63,18 +64,21 @@ mod request_conversion {
                     content: json!("You are helpful."),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 },
                 ChatMessage {
                     role: Role::User,
                     content: json!("Hi"),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 },
                 ChatMessage {
                     role: Role::Assistant,
                     content: json!("Hello! How can I help?"),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 },
             ],
             temperature: None,
@@ -115,6 +119,7 @@ mod request_conversion {
                 content: json!("Test"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -156,6 +161,7 @@ mod request_conversion {
                     content: json!("Test"),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 }],
                 temperature: None,
                 top_p: None,
@@ -190,6 +196,7 @@ mod request_conversion {
                 content: json!("Test"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: Some(0.7),
             top_p: Some(0.9),
@@ -222,6 +229,7 @@ mod request_conversion {
                 content: json!("Test"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -250,6 +258,7 @@ mod request_conversion {
                 content: json!("Test"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -280,6 +289,7 @@ mod request_conversion {
                 content: json!("Test"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -310,6 +320,7 @@ mod request_conversion {
                 content: json!("Test"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -340,6 +351,7 @@ mod request_conversion {
                 content: json!("Test"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -375,6 +387,7 @@ mod request_conversion {
                 content: json!("Test"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -422,6 +435,7 @@ mod role_mapping {
                     content: json!("test"),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 }],
                 temperature: None,
                 top_p: None,
@@ -457,6 +471,7 @@ mod role_mapping {
                 content: json!({"result": "success"}),
                 name: Some("my_function".into()),
                 tool_call_id: Some("call-abc123".into()),
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -489,6 +504,7 @@ mod role_mapping {
                 content: json!("Tool result"),
                 name: Some("search_tool".into()),
                 tool_call_id: Some("call-xyz".into()),
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -528,6 +544,7 @@ mod tool_conversion {
                 content: json!("Use the lookup tool"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -592,6 +609,7 @@ mod tool_conversion {
                 content: json!("Use tools"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -662,6 +680,7 @@ mod tool_conversion {
                     content: json!("Test"),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 }],
                 temperature: None,
                 top_p: None,
@@ -686,11 +705,64 @@ mod tool_conversion {
             };
 
             let out = to_responses_request(&req, None);
-            assert_eq!(
-                out.tool_choice,
-                Some(tool_choice.clone()),
-                "tool_choice must be preserved exactly"
-            );
+            match (&tool_choice, out.tool_choice.clone()) {
+                (Value::String(_), Some(actual)) => assert_eq!(
+                    actual,
+                    tool_choice.clone(),
+                    "string tool_choice should be forwarded unchanged"
+                ),
+                (Value::Object(orig), Some(Value::Object(out_map))) => {
+                    let is_function = orig
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .map(|s| s == "function")
+                        .unwrap_or(false);
+
+                    if is_function {
+                        let function = orig
+                            .get("function")
+                            .and_then(Value::as_object)
+                            .expect("function tool choice must include object");
+                        let fn_name = function
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .expect("function tool choice must include name");
+
+                        assert_eq!(
+                            out_map.get("type"),
+                            Some(&Value::String("function".to_string())),
+                            "tool_choice type should remain function"
+                        );
+                        assert_eq!(
+                            out_map.get("name"),
+                            Some(&Value::String(fn_name.to_string())),
+                            "tool_choice function name should be flattened"
+                        );
+
+                        match function.get("arguments") {
+                            Some(args) => assert_eq!(
+                                out_map.get("arguments"),
+                                Some(args),
+                                "tool_choice function arguments should be preserved"
+                            ),
+                            None => assert!(
+                                !out_map.contains_key("arguments"),
+                                "tool_choice function should not introduce arguments"
+                            ),
+                        }
+                    } else {
+                        assert_eq!(
+                            Value::Object(out_map.clone()),
+                            tool_choice.clone(),
+                            "non-function tool_choice object should be unchanged"
+                        );
+                    }
+                }
+                (expected, actual) => panic!(
+                    "Unexpected tool_choice mapping: {:?} -> {:?}",
+                    expected, actual
+                ),
+            }
         }
     }
 
@@ -703,6 +775,7 @@ mod tool_conversion {
                 content: json!("Test"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -760,6 +833,7 @@ mod tool_conversion {
                 content: json!("Get weather"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -822,6 +896,7 @@ mod response_format {
                 content: json!("Return JSON"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -865,6 +940,7 @@ mod response_format {
                 content: json!("Test"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -903,6 +979,7 @@ mod response_format {
                 content: json!("Test"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -948,6 +1025,7 @@ mod multimodal_content {
                 content: json!("Simple text message"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -992,6 +1070,7 @@ mod multimodal_content {
                 content: content.clone(),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -1047,6 +1126,7 @@ mod multimodal_content {
                 content,
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -1097,6 +1177,7 @@ mod multimodal_content {
                 content,
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -1135,6 +1216,7 @@ mod multimodal_content {
                     content: json!("Plain text"),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 },
                 ChatMessage {
                     role: Role::User,
@@ -1144,6 +1226,7 @@ mod multimodal_content {
                     ]),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 },
             ],
             temperature: None,
@@ -1210,6 +1293,7 @@ mod edge_cases {
                 content: json!(null),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -1240,6 +1324,7 @@ mod edge_cases {
                 content: json!("Test"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -1273,6 +1358,7 @@ mod edge_cases {
                 content: json!("Minimal request"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -1316,6 +1402,7 @@ mod edge_cases {
                 content: json!("Test"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: Some(2.0), // Max temperature
             top_p: Some(1.0),       // Max top_p
@@ -1355,6 +1442,7 @@ mod edge_cases {
                 content: json!(format!("Message {}", i)),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             });
         }
 
@@ -1404,12 +1492,14 @@ mod serialization {
                     content: json!("You are helpful."),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 },
                 ChatMessage {
                     role: Role::User,
                     content: json!("Hello"),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 },
             ],
             temperature: Some(0.7),
@@ -1452,6 +1542,7 @@ mod serialization {
                 content: json!("Test"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -1497,6 +1588,7 @@ mod serialization {
                 content: json!("Hello"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -1737,12 +1829,14 @@ mod round_trip {
                     content: json!("You are helpful."),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 },
                 ChatMessage {
                     role: Role::User,
                     content: json!("Hello"),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 },
             ],
             temperature: Some(0.7),
@@ -1791,6 +1885,7 @@ mod round_trip {
                 content: json!("Use tool"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -1847,6 +1942,7 @@ mod round_trip {
                 content: content.clone(),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -1904,6 +2000,7 @@ mod reasoning_models {
                     content: json!("Solve this complex problem"),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 }],
                 temperature: None,
                 top_p: None,
@@ -1942,12 +2039,14 @@ mod reasoning_models {
                     content: json!("Think step by step."),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 },
                 ChatMessage {
                     role: Role::User,
                     content: json!("Complex reasoning task"),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 },
             ],
             temperature: Some(1.0),
@@ -2009,6 +2108,7 @@ mod specification_compliance {
                     content: json!(content),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 }
             })
             .collect();
@@ -2054,6 +2154,7 @@ mod specification_compliance {
                 content: json!("Test"),
                 name: Some("user1".into()),
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: Some(0.5),
             top_p: Some(0.8),
@@ -2120,6 +2221,7 @@ mod specification_compliance {
                 content: json!("Extract person data"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -2157,6 +2259,7 @@ mod specification_compliance {
                 content: json!("Continue our conversation"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -2200,6 +2303,7 @@ mod vision_comprehensive {
                 ]),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -2266,6 +2370,7 @@ mod vision_comprehensive {
                 ]),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -2307,6 +2412,7 @@ mod vision_comprehensive {
                 ]),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -2349,6 +2455,7 @@ mod vision_comprehensive {
                 ]),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -2395,6 +2502,7 @@ mod vision_comprehensive {
                 ]),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -2451,24 +2559,28 @@ mod real_world_scenarios {
                     content: json!("You are a helpful assistant with access to tools."),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 },
                 ChatMessage {
                     role: Role::User,
                     content: json!("What's the weather in San Francisco?"),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 },
                 ChatMessage {
                     role: Role::Assistant,
                     content: json!(null),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 },
                 ChatMessage {
                     role: Role::Tool,
                     content: json!("{\"temperature\": 65, \"conditions\": \"sunny\"}"),
                     name: Some("get_weather".into()),
                     tool_call_id: Some("call_abc123".into()),
+                    tool_calls: None,
                 },
             ],
             temperature: Some(0.7),
@@ -2522,6 +2634,7 @@ mod real_world_scenarios {
                 ]),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -2574,6 +2687,7 @@ mod real_world_scenarios {
                 content: json!("Summarize this document"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -2617,6 +2731,7 @@ mod real_world_scenarios {
             content: json!("You are a coding assistant."),
             name: None,
             tool_call_id: None,
+            tool_calls: None,
         }];
 
         // Add 20 user/assistant exchanges
@@ -2626,12 +2741,14 @@ mod real_world_scenarios {
                 content: json!(format!("User message {}", i)),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             });
             messages.push(ChatMessage {
                 role: Role::Assistant,
                 content: json!(format!("Assistant response {}", i)),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             });
         }
 

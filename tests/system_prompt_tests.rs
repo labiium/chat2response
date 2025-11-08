@@ -77,12 +77,14 @@ fn test_inject_system_prompt_prepend() {
             content: json!("Hello"),
             name: None,
             tool_call_id: None,
+            tool_calls: None,
         },
         ResponsesMessage {
             role: "assistant".to_string(),
             content: json!("Hi there!"),
             name: None,
             tool_call_id: None,
+            tool_calls: None,
         },
     ];
 
@@ -102,12 +104,14 @@ fn test_inject_system_prompt_append() {
             content: json!("Original system message"),
             name: None,
             tool_call_id: None,
+            tool_calls: None,
         },
         ResponsesMessage {
             role: "user".to_string(),
             content: json!("Hello"),
             name: None,
             tool_call_id: None,
+            tool_calls: None,
         },
     ];
 
@@ -129,18 +133,21 @@ fn test_inject_system_prompt_replace() {
             content: json!("Old system message"),
             name: None,
             tool_call_id: None,
+            tool_calls: None,
         },
         ResponsesMessage {
             role: "user".to_string(),
             content: json!("Hello"),
             name: None,
             tool_call_id: None,
+            tool_calls: None,
         },
         ResponsesMessage {
             role: "system".to_string(),
             content: json!("Another old system message"),
             name: None,
             tool_call_id: None,
+            tool_calls: None,
         },
     ];
 
@@ -161,6 +168,7 @@ fn test_inject_system_prompt_chat_prepend() {
             content: json!("Hello"),
             name: None,
             tool_call_id: None,
+            tool_calls: None,
         }],
         temperature: None,
         top_p: None,
@@ -196,18 +204,21 @@ fn test_inject_system_prompt_chat_replace() {
                 content: json!("Old system message"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             },
             ChatMessage {
                 role: Role::User,
                 content: json!("Hello"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             },
             ChatMessage {
                 role: Role::System,
                 content: json!("Another old"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             },
         ],
         temperature: None,
@@ -244,12 +255,14 @@ fn test_inject_system_prompt_chat_append() {
                 content: json!("Original system"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             },
             ChatMessage {
                 role: Role::User,
                 content: json!("Hello"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             },
         ],
         temperature: None,

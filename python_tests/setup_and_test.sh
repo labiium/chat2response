@@ -201,16 +201,29 @@ start_routiium_server() {
         fi
     done < "$ENV_FILE"
 
-    # Optional router configuration
+    # Optional configuration files
+    CLI_ARGS=()
+
     ROUTER_CONFIG_PATH="$PYTHON_TESTS_DIR/router_aliases.json"
-    ROUTER_ARGS=()
     if [ -f "$ROUTER_CONFIG_PATH" ]; then
         log_info "Using router config at $ROUTER_CONFIG_PATH"
-        ROUTER_ARGS+=("--router-config=$ROUTER_CONFIG_PATH")
+        CLI_ARGS+=("--router-config=$ROUTER_CONFIG_PATH")
+    fi
+
+    MCP_CONFIG_PATH="$PYTHON_TESTS_DIR/mcp/mcp.json"
+    if [ -f "$MCP_CONFIG_PATH" ]; then
+        log_info "Using MCP config at $MCP_CONFIG_PATH"
+        CLI_ARGS+=("--mcp-config=$MCP_CONFIG_PATH")
+    fi
+
+    SYSTEM_PROMPT_CONFIG_PATH="$PYTHON_TESTS_DIR/system_prompt.json"
+    if [ -f "$SYSTEM_PROMPT_CONFIG_PATH" ]; then
+        log_info "Using system prompt config at $SYSTEM_PROMPT_CONFIG_PATH"
+        CLI_ARGS+=("--system-prompt-config=$SYSTEM_PROMPT_CONFIG_PATH")
     fi
 
     # Start server in background
-    ./target/release/routiium "${ROUTER_ARGS[@]}" &
+    ./target/release/routiium "${CLI_ARGS[@]}" &
     SERVER_PID=$!
 
     # Save PID

@@ -18,7 +18,33 @@ pub fn responses_to_chat_response(
     responses_response: &resp::ResponsesResponse,
 ) -> chat::ChatCompletionResponse {
     // Extract primary message content
-    let content = responses_response.output_text.clone();
+    let mut content = responses_response.output_text.clone();
+
+    if content.is_none() {
+        let mut text_parts: Vec<String> = Vec::new();
+        for item in &responses_response.output {
+            match item {
+                resp::OutputItem::AssistantMessage { content: text, .. } => {
+                    if !text.is_empty() {
+                        text_parts.push(text.clone());
+                    }
+                }
+                resp::OutputItem::FunctionCallOutput { content: text, .. } => {
+                    if !text.is_empty() {
+                        text_parts.push(text.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if !text_parts.is_empty() {
+            content = Some(text_parts.join(
+                "
+",
+            ));
+        }
+    }
 
     // Check if there are tool calls in the output
     let mut tool_calls: Vec<chat::ToolCall> = Vec::new();
@@ -44,6 +70,12 @@ pub fn responses_to_chat_response(
         }
     }
 
+    if content.is_none() && !tool_calls.is_empty() {
+        content = None;
+    } else if content.is_none() {
+        content = Some(String::new());
+    }
+
     // Build the assistant message
     let message = chat::ChatResponseMessage {
         role: "assistant".to_string(),
@@ -55,7 +87,6 @@ pub fn responses_to_chat_response(
         },
         function_call: None,
     };
-
     // Create single choice
     let choice = chat::ChatChoice {
         index: 0,
@@ -143,18 +174,51 @@ pub fn responses_chunk_to_chat_chunk(
     responses_chunk: &resp::ResponsesChunk,
     is_first: bool,
 ) -> chat::ChatCompletionChunk {
-    let delta = if is_first {
-        chat::ChatDelta {
-            role: Some("assistant".to_string()),
-            content: responses_chunk.output_text_delta.clone(),
-            tool_calls: None,
+    let mut delta_content = responses_chunk.output_text_delta.clone();
+    let mut tool_call_deltas: Vec<chat::ToolCallDelta> = Vec::new();
+
+    if let Some(output_deltas) = &responses_chunk.output_deltas {
+        for (idx, item) in output_deltas.iter().enumerate() {
+            match item {
+                resp::OutputItem::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                    ..
+                } => {
+                    tool_call_deltas.push(chat::ToolCallDelta {
+                        index: idx as u32,
+                        id: Some(call_id.clone()),
+                        call_type: Some("function".to_string()),
+                        function: Some(chat::FunctionCallDelta {
+                            name: Some(name.clone()),
+                            arguments: Some(arguments.clone()),
+                        }),
+                    });
+                }
+                resp::OutputItem::AssistantMessage { content, .. }
+                | resp::OutputItem::FunctionCallOutput { content, .. } => {
+                    if delta_content.is_none() {
+                        delta_content = Some(content.clone());
+                    }
+                }
+                _ => {}
+            }
         }
-    } else {
-        chat::ChatDelta {
-            role: None,
-            content: responses_chunk.output_text_delta.clone(),
-            tool_calls: None,
-        }
+    }
+
+    let delta = chat::ChatDelta {
+        role: if is_first {
+            Some("assistant".to_string())
+        } else {
+            None
+        },
+        content: delta_content,
+        tool_calls: if tool_call_deltas.is_empty() {
+            None
+        } else {
+            Some(tool_call_deltas)
+        },
     };
 
     let choice = chat::ChatStreamChoice {
@@ -225,11 +289,21 @@ pub fn responses_json_to_chat_request(v: &serde_json::Value) -> chat::ChatComple
                 .get("tool_call_id")
                 .and_then(|n| n.as_str())
                 .map(|s| s.to_string());
+            let tool_calls = m.get("tool_calls").and_then(|tc| {
+                tc.as_array().map(|arr| {
+                    arr.iter()
+                        .filter_map(|val| {
+                            serde_json::from_value::<chat::ToolCall>(val.clone()).ok()
+                        })
+                        .collect::<Vec<_>>()
+                })
+            });
             messages.push(chat::ChatMessage {
                 role,
                 content,
                 name,
                 tool_call_id,
+                tool_calls: tool_calls.filter(|v| !v.is_empty()),
             });
         }
     }
@@ -540,6 +614,7 @@ mod tests_responses_to_chat {
                 ]),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -595,6 +670,7 @@ mod tests_responses_to_chat {
                 ]),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -647,6 +723,18 @@ pub fn to_responses_request(
 
     let response_format = src.response_format.as_ref().map(map_response_format);
 
+    let mut max_output_tokens = src.max_completion_tokens.or(src.max_tokens);
+    if let Some(max_tokens) = max_output_tokens {
+        if max_tokens < 16 {
+            max_output_tokens = Some(16);
+        }
+    }
+
+    let tool_choice = src
+        .tool_choice
+        .as_ref()
+        .map(|tc| map_tool_choice_for_responses(tc));
+
     resp::ResponsesRequest {
         model: src.model.clone(),
         messages,
@@ -654,7 +742,7 @@ pub fn to_responses_request(
         temperature: src.temperature,
         top_p: src.top_p,
         // Prefer max_completion_tokens (newer parameter) over max_tokens
-        max_output_tokens: src.max_completion_tokens.or(src.max_tokens),
+        max_output_tokens,
         stop: src.stop.clone(),
         presence_penalty: src.presence_penalty,
         frequency_penalty: src.frequency_penalty,
@@ -663,7 +751,7 @@ pub fn to_responses_request(
         n: src.n,
         // Tools
         tools,
-        tool_choice: src.tool_choice.clone(),
+        tool_choice,
         // Output shaping
         response_format,
         // Streaming
@@ -762,6 +850,7 @@ pub fn inject_system_prompt_chat(req: &mut chat::ChatCompletionRequest, prompt: 
         content: serde_json::Value::String(prompt.to_string()),
         name: None,
         tool_call_id: None,
+        tool_calls: None,
     };
 
     match mode {
@@ -798,6 +887,7 @@ pub fn inject_system_prompt(messages: &mut Vec<resp::ResponsesMessage>, prompt: 
         content: serde_json::Value::String(prompt.to_string()),
         name: None,
         tool_call_id: None,
+        tool_calls: None,
     };
 
     match mode {
@@ -825,11 +915,36 @@ pub fn inject_system_prompt(messages: &mut Vec<resp::ResponsesMessage>, prompt: 
 
 fn map_messages(src: &[chat::ChatMessage]) -> Vec<resp::ResponsesMessage> {
     src.iter()
-        .map(|m| resp::ResponsesMessage {
-            role: role_to_string(&m.role).to_string(),
-            content: map_message_content(&m.content),
-            name: m.name.clone(),
-            tool_call_id: m.tool_call_id.clone(),
+        .map(|m| {
+            let tool_calls_raw = m.tool_calls.as_ref().map(|calls| {
+                calls
+                    .iter()
+                    .filter_map(|call| serde_json::to_value(call).ok())
+                    .collect::<Vec<_>>()
+            });
+
+            let mut content_value = map_message_content(&m.content);
+            let has_tool_calls = tool_calls_raw
+                .as_ref()
+                .map_or(false, |items| !items.is_empty());
+
+            if content_value.is_null() && matches!(m.role, chat::Role::Assistant) && has_tool_calls
+            {
+                content_value = serde_json::Value::String(String::new());
+            }
+
+            let tool_calls = tool_calls_raw
+                .as_ref()
+                .filter(|items| !items.is_empty())
+                .cloned();
+
+            resp::ResponsesMessage {
+                role: role_to_string(&m.role).to_string(),
+                content: content_value,
+                name: m.name.clone(),
+                tool_call_id: m.tool_call_id.clone(),
+                tool_calls,
+            }
         })
         .collect()
 }
@@ -911,7 +1026,8 @@ fn map_message_content(content: &serde_json::Value) -> serde_json::Value {
             Value::Array(transformed_parts)
         }
 
-        // Other types (null, object, etc.) - pass through unchanged
+        // Other types (null, object, numbers) - pass through unchanged
+        Value::Null => Value::Null,
         _ => content.clone(),
     }
 }
@@ -934,6 +1050,33 @@ fn map_tool(t: &chat::ToolDefinition) -> resp::ResponsesToolDefinition {
             description: function.description.clone(),
             parameters: function.parameters.clone(),
         },
+    }
+}
+
+fn map_tool_choice_for_responses(value: &serde_json::Value) -> serde_json::Value {
+    use serde_json::{Map, Value};
+
+    match value {
+        Value::String(_) => value.clone(),
+        Value::Object(obj) => {
+            if let Some(Value::String(kind)) = obj.get("type") {
+                if kind == "function" {
+                    if let Some(function) = obj.get("function").and_then(|f| f.as_object()) {
+                        if let Some(Value::String(name)) = function.get("name") {
+                            let mut out = Map::new();
+                            out.insert("type".to_string(), Value::String("function".to_string()));
+                            out.insert("name".to_string(), Value::String(name.clone()));
+                            if let Some(arguments) = function.get("arguments") {
+                                out.insert("arguments".to_string(), arguments.clone());
+                            }
+                            return Value::Object(out);
+                        }
+                    }
+                }
+            }
+            value.clone()
+        }
+        _ => value.clone(),
     }
 }
 
@@ -969,12 +1112,14 @@ mod tests {
                     content: json!("You are helpful."),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 },
                 ChatMessage {
                     role: Role::User,
                     content: json!("Hello"),
                     name: None,
                     tool_call_id: None,
+                    tool_calls: None,
                 },
             ],
             temperature: Some(0.3),
@@ -1020,6 +1165,7 @@ mod tests {
                 content: json!("Call a tool"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,
@@ -1080,6 +1226,7 @@ mod tests {
                 content: json!("result"),
                 name: Some("fn".into()),
                 tool_call_id: Some("t1".into()),
+                tool_calls: None,
             }],
             temperature: None,
             top_p: None,

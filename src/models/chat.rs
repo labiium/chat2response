@@ -35,6 +35,9 @@ pub struct ChatMessage {
     /// Optional tool call identifier (tool result correlation).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Optional list of tool calls (assistant tool invocation metadata).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 /// JSON Schema for a function tool definition in Chat Completions.

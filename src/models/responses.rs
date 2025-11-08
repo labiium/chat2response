@@ -17,6 +17,9 @@ pub struct ResponsesMessage {
     /// Optional correlation id when returning tool outputs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Optional assistant tool call metadata when returning original tool decisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<serde_json::Value>>,
 }
 
 /// Tool definition for Responses API.

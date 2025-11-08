@@ -41,8 +41,11 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
-    // Find first non-flag positional arg as MCP config path (optional)
-    let mcp_config_arg = args.iter().skip(1).find(|a| !a.starts_with('-')).cloned();
+    // Optional MCP config path via --mcp-config=<path>
+    let mcp_config_arg = args
+        .iter()
+        .find(|a| a.starts_with("--mcp-config="))
+        .and_then(|a| a.strip_prefix("--mcp-config=").map(|s| s.to_string()));
 
     // Check for --system-prompt-config flag
     let system_prompt_config_arg = args
@@ -94,7 +97,7 @@ async fn main() -> std::io::Result<()> {
     } else {
         tracing::info!("No MCP config provided, running without MCP support");
         tracing::info!(
-                "Usage: {} [mcp.json] [--keys-backend=redis://...|sled:<path>|memory] [--system-prompt-config=system_prompt.json] [--routing-config=routing.json]",
+                "Usage: {} [--mcp-config=mcp.json] [--keys-backend=redis://...|sled:<path>|memory] [--system-prompt-config=system_prompt.json] [--routing-config=routing.json]",
                 args[0]
             );
         (None, None)

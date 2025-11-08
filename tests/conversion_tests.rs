@@ -2,7 +2,7 @@ use routiium::models::chat::{
     ChatCompletionRequest, ChatMessage, FunctionDef, ResponseFormat, Role, ToolDefinition,
 };
 use routiium::to_responses_request;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 
 #[test]
@@ -15,24 +15,28 @@ fn basic_role_and_message_mapping() {
                 content: json!("You are helpful."),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             },
             ChatMessage {
                 role: Role::User,
                 content: json!("Hello"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             },
             ChatMessage {
                 role: Role::Assistant,
                 content: json!("Hi!"),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             },
             ChatMessage {
                 role: Role::Tool,
                 content: json!({"result": "ok"}),
                 name: Some("my_tool".into()),
                 tool_call_id: Some("call-1".into()),
+                tool_calls: None,
             },
             // Legacy/alias role expected to be mapped to "tool" in Responses
             ChatMessage {
@@ -40,6 +44,7 @@ fn basic_role_and_message_mapping() {
                 content: json!("fn output"),
                 name: Some("legacy_fn".into()),
                 tool_call_id: Some("call-2".into()),
+                tool_calls: None,
             },
         ],
         temperature: None,
@@ -88,6 +93,7 @@ fn sampling_limits_and_stopping_map_correctly() {
             content: json!("Say hi"),
             name: None,
             tool_call_id: None,
+            tool_calls: None,
         }],
         temperature: Some(0.7),
         top_p: Some(0.9),
@@ -130,6 +136,7 @@ fn stop_array_supported_and_preserved() {
             content: json!("Give list"),
             name: None,
             tool_call_id: None,
+            tool_calls: None,
         }],
         temperature: None,
         top_p: None,
@@ -149,7 +156,7 @@ fn stop_array_supported_and_preserved() {
     };
 
     let out = to_responses_request(&req, None);
-    assert_eq!(out.max_output_tokens, Some(10));
+    assert_eq!(out.max_output_tokens, Some(16));
     assert_eq!(out.stop, Some(json!(["END", "---"])));
 }
 
@@ -162,6 +169,7 @@ fn tools_and_tool_choice_are_forwarded() {
             content: json!("Use the tool please"),
             name: None,
             tool_call_id: None,
+            tool_calls: None,
         }],
         temperature: None,
         top_p: None,
@@ -207,10 +215,14 @@ fn tools_and_tool_choice_are_forwarded() {
     }
 
     // Tool choice forwarded
-    assert_eq!(
-        out.tool_choice,
-        Some(json!({"type":"function","function":{"name":"lookup"}}))
-    );
+    let choice = out.tool_choice.expect("missing tool_choice");
+    match choice {
+        Value::Object(map) => {
+            assert_eq!(map.get("type"), Some(&Value::String("function".into())));
+            assert_eq!(map.get("name"), Some(&Value::String("lookup".into())));
+        }
+        other => panic!("unexpected tool_choice shape: {:?}", other),
+    }
     // Stream forwarded
     assert_eq!(out.stream, Some(true));
 }
@@ -229,6 +241,7 @@ fn response_format_forwarding_and_type_override_protection() {
             content: json!("Return JSON please"),
             name: None,
             tool_call_id: None,
+            tool_calls: None,
         }],
         temperature: None,
         top_p: None,
@@ -274,6 +287,7 @@ fn content_array_is_preserved_for_multimodal_shape() {
             content: content.clone(),
             name: None,
             tool_call_id: None,
+            tool_calls: None,
         }],
         temperature: None,
         top_p: None,

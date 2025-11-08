@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "mock": {
+      "command": "python3",
+      "args": [
+        "-u",
+        "python_tests/mcp/mock_mcp_server.py"
+      ]
+    }
+  }
+}

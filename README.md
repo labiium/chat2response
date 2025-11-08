@@ -2,986 +2,215 @@
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-Convert OpenAI Chat Completions requests to the new Responses API format.
+Routiium is an Actix-web service and Rust crate that exposes OpenAI-compatible `/v1/chat/completions` and `/v1/responses` endpoints while transparently translating payloads, streaming events, tools, routing decisions, and analytics on the fly. It lets existing Chat Completions clients tap into the modern Responses API (or any compatible upstream) without rewriting application code, while still benefiting from policy-aware multi-backend routing (documented in [`ROUTER_API_SPEC.md`](ROUTER_API_SPEC.md)) and full-stack observability via the analytics pipeline described in [`ANALYTICS.md`](ANALYTICS.md).
 
-Routiium bridges the gap between OpenAI's legacy Chat Completions API and the powerful new Responses API. Get all the benefits of the modern API without rewriting your existing Chat Completions code.
+## What It Does
 
-## CLI Usage
-
-Run the server:
-```bash
-routiium [mcp.json] [--keys-backend=redis://...|sled:<path>|memory] [--system-prompt-config=system_prompt.json]
-```
-
-- `mcp.json` positional: if provided as the first non-flag argument, the server loads and connects to MCP servers defined in that file.
-- `--keys-backend`: selects the API key storage backend at runtime:
-- `--system-prompt-config`: path to system prompt configuration file for automatic prompt injection.
-  - `redis://...` uses Redis with an r2d2 connection pool (pool size via `ROUTIIUM_REDIS_POOL_MAX`).
-  - `sled:<path>` uses an embedded sled database at the given path.
-  - `memory` uses an in-memory, non-persistent store.
-
-Backend precedence (highest to lowest):
-
-## Multi-backend routing (per-model base URLs)
-
-Use the ROUTIIUM_BACKENDS environment variable to route different model prefixes to different provider base URLs and API keys.
-
-Format:
-- Semicolon-separated rules; within each rule, use comma- or semicolon-separated key=value pairs.
-- Keys:
-  - prefix: model prefix to match (starts_with)
-  - base or base_url: provider base URL (include /v1 if required)
-  - key_env (optional): name of the env var holding the provider API key
-  - mode (optional): responses or chat; defaults to ROUTIIUM_UPSTREAM_MODE or responses
-
-Example:
-- Route gpt-* to OpenAI, claude-* to Anthropic, and llama* to a local Ollama/vLLM chat endpoint:
-
-```
-export OPENAI_API_KEY=sk-openai...
-export ANTHROPIC_API_KEY=sk-anthropic...
-export ROUTIIUM_BACKENDS="prefix=gpt-;base=https://api.openai.com/v1;key_env=OPENAI_API_KEY;mode=responses; prefix=claude-;base=https://api.anthropic.com/v1;key_env=ANTHROPIC_API_KEY;mode=responses; prefix=llama;base=http://localhost:11434/v1;mode=chat"
-routiium
-```
-
-Notes:
-- When mode=chat for a rule, the server automatically converts Responses-shaped payloads to Chat Completions for that upstream and calls /v1/chat/completions.
-- Managed auth: when OPENAI_API_KEY is set and you use generated access tokens, the routing layer picks the correct provider key via key_env per rule, so clients never see provider secrets.
-- Passthrough auth: if you don’t run managed auth, the client Bearer is forwarded unless a provider-specific key_env is configured and no client Bearer is provided.
-- Legacy routing: `ROUTIIUM_BACKENDS` remains supported, but new deployments should prefer the schema 1.1 Router integration described below for richer policy control.
-1) `--keys-backend=...` (CLI)
-2) `ROUTIIUM_REDIS_URL` (if set, Redis is used)
-3) `sled` (embedded; used when no Redis URL is provided)
-4) `memory` (fallback)
-
-Examples:
-- Basic server (no MCP):
-```bash
-routiium
-```
-- With MCP configuration file:
-```bash
-routiium mcp.json
-```
-- Use Redis explicitly (CLI overrides env):
-```bash
-routiium --keys-backend=redis://127.0.0.1/
-```
-- Use sled at a custom path:
-```bash
-routiium --keys-backend=sled:./data/keys.db
-```
-- Force in-memory store (useful for demos/tests):
-```bash
-routiium --keys-backend=memory
-```
-- With environment variables:
-```bash
-ROUTIIUM_REDIS_URL=redis://127.0.0.1/ routiium
-```
-
-## Router integration (Schema 1.1)
-
-Routiium now supports a first-class Router interface for virtual model aliases, stickiness, and policy-driven routing. You can run in three modes:
-
-- **Local**: load a static alias map via `--router-config=router_aliases.json` (see [`router_aliases.json.example`](router_aliases.json.example)).
-- **Remote**: point to a Router service with `ROUTIIUM_ROUTER_URL` / `ROUTIIUM_ROUTER_MODE=remote` and follow the v1.1 contract described in [`ROUTER_API_SPEC.md`](ROUTER_API_SPEC.md).
-- **Hybrid**: combine local aliases with a remote Router (`ROUTIIUM_ROUTER_MODE=hybrid`) for low-latency fallbacks.
-
-Key environment variables:
-
-```bash
-ROUTIIUM_ROUTER_MODE=local|remote|hybrid
-ROUTIIUM_ROUTER_URL=https://router.internal           # remote/hybrid
-ROUTIIUM_ROUTER_TIMEOUT_MS=15                         # request budget to router
-# When set (1/true/yes/on), fail requests if the router has no plan for an alias.
-# Default behaviour falls back to legacy prefix routing.
-ROUTIIUM_ROUTER_STRICT=false
-ROUTIIUM_CACHE_TTL_MS=15000                           # plan cache TTL (ms)
-ROUTIIUM_EXPOSE_ROUTE_HEADERS=1                      # surface X-Route-* headers to clients
-```
-
-The Router contract uses schema version **1.1**:
-
-- Every request/response includes `schema_version`.
-- Costs are expressed in micro-units (`est_cost_micro`, `actual_cost_micro`).
-- Plans deliver stickiness tokens (`stickiness.plan_token`) and cache semantics (`cache.valid_until`, `cache.freeze_key`).
-- Observability headers (`Router-Schema`, `X-Route-Cache`, `X-Content-Used`, etc.) keep analytics aligned.
-
-For Router implementers, start with [`ROUTER_API_SPEC.md`](ROUTER_API_SPEC.md) and the reference server in [`examples/router_service.rs`](examples/router_service.rs). If you need fine-grained on-box routing logic instead, the legacy JSON routing config is still available via [`routing.json.example`](routing.json.example) and `--routing-config`.
-
-## Why Use This?
-
-- Easy migration: keep your Chat Completions code, get Responses API benefits
-- Better streaming with typed events and tool traces
-- Unified interface for text, tools, and multimodal inputs
-- Lightweight single binary
-- Add Responses API support to vLLM, Ollama, and other providers
-- MCP integration for enhanced tool capabilities
+- Converts legacy Chat Completions requests, responses, and SSE chunks into the Responses API format (and back) while preserving tools, multimodal parts, logprobs, and token usage.
+- Proxies `/v1/chat/completions` and `/v1/responses` to multiple upstream providers with per-model base URLs, custom headers, managed or passthrough auth, and automatic system prompt injection.
+- Integrates with Router services (remote HTTP or local alias files) for policy-aware routing and falls back to legacy prefix rules defined via `ROUTIIUM_BACKENDS`.
+- Issues, verifies, revokes, and expires first-party API keys (Redis, sled, or in-memory backends) so clients never see provider secrets.
+- Pulls Model Context Protocol (MCP) tools into each request so clients automatically see the union of their declared tools plus any connected MCP servers.
+- Records detailed analytics (request metadata, routing choices, auth state, token usage, per-request cost) using JSONL, Redis, Sled, or memory, and exposes query/export endpoints for operators.
+- Ships with reloadable configuration for system prompts, MCP servers, and (experimental) routing metadata plus `/status` for automation.
 
 ## Quick Start
 
-### Install and Run
-
 ```bash
-# Install from crates.io (preferred)
-cargo install routiium
-
-# Clone and build (alternative)
-git clone https://github.com/labiium/routiium
+git clone https://github.com/labiium/routiium.git
 cd routiium
-cargo install --path .
-
-# Start the server (basic mode)
-OPENAI_API_KEY=sk-your-key routiium
-
-# Start with MCP integration
-OPENAI_API_KEY=sk-your-key routiium mcp.json
-
-# Start with local router aliases
-OPENAI_API_KEY=sk-your-key routiium --router-config=router_aliases.json.example
-
-# Start with remote router (schema 1.1)
-ROUTIIUM_ROUTER_URL=https://router.internal \
-ROUTIIUM_ROUTER_MODE=remote \
-OPENAI_API_KEY=sk-your-key \
-routiium
+# Provide whatever env vars you need (OPENAI_API_KEY, ROUTIIUM_BACKENDS, etc.)
+cargo run --release -- \
+  --mcp-config=mcp.json.example \
+  --system-prompt-config=system_prompt.json.example \
+  --router-config=router_aliases.json.example
 ```
 
-Server runs at `http://localhost:8088`.
-
-### Run with Docker (GHCR)
-
-Official images are published to GitHub Container Registry (GHCR):
-- Image: `ghcr.io/labiium/routiium`
-- Tags:
-  - `edge` — latest commit on `main`/`master`
-  - Release tags — `vX.Y.Z`, `X.Y`, `X`, and `latest` on versioned releases
-  - `sha-<short>` — content‐addressed builds
-
-Pull:
-```bash
-docker pull ghcr.io/labiium/routiium:edge
-```
-
-Basic run (sled backend with persistent volume):
-```bash
-docker run --rm -p 8088:8088 \
-  -e OPENAI_BASE_URL=https://api.openai.com/v1 \
-  -e OPENAI_API_KEY=sk-your-key \
-  -v routiium-data:/data \
-  ghcr.io/labiium/routiium:edge
-```
-
-Use Redis backend:
-```bash
-# macOS/Windows (Docker Desktop)
-docker run --rm -p 8088:8088 \
-  -e OPENAI_BASE_URL=https://api.openai.com/v1 \
-  -e ROUTIIUM_REDIS_URL=redis://host.docker.internal:6379/ \
-  ghcr.io/labiium/routiium:edge --keys-backend=redis://host.docker.internal:6379/
-
-# Linux (access local Redis)
-docker run --rm --network=host \
-  -e OPENAI_BASE_URL=https://api.openai.com/v1 \
-  -e ROUTIIUM_REDIS_URL=redis://127.0.0.1:6379/ \
-  ghcr.io/labiium/routiium:edge --keys-backend=redis://127.0.0.1:6379/
-```
-
-With MCP configuration:
-```bash
-# Ensure mcp.json exists locally
-docker run --rm -p 8088:8088 \
-  -e OPENAI_BASE_URL=https://api.openai.com/v1 \
-  -v $(pwd)/mcp.json:/app/mcp.json:ro \
-  -v routiium-data:/data \
-  ghcr.io/labiium/routiium:edge /app/mcp.json
-```
-
-Notes:
-- Defaults inside the image:
-  - `BIND_ADDR=0.0.0.0:8088` (listens on all interfaces)
-  - `ROUTIIUM_SLED_PATH=/data/keys.db` (mount a volume for persistence)
-- You can pass CLI flags exactly as with the binary (e.g., `--keys-backend=...`).
-- For corporate proxies, set `HTTP_PROXY`/`HTTPS_PROXY` env vars.
-
-### Convert Only (No API Calls)
+Call the proxy (managed auth shown — use your issued `sk_<id>.<secret>` token):
 
 ```bash
-curl -X POST http://localhost:8088/convert \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4o",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-Returns the equivalent Responses API request (no OpenAI call made).
-
-### Full Proxy (Calls OpenAI)
-
-```bash
-curl -X POST http://localhost:8088/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk-your-key" \
-  -d '{
-    "model": "gpt-4o",
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "stream": true
-  }'
-```
-
-Converts your request and forwards it to OpenAI's Responses endpoint.
-
-## Key Features
-
-### Automatic Conversion
-- `messages` → Responses format
-- `max_tokens` → `max_output_tokens`
-- `tools` → Responses tool schema
-- All parameters mapped correctly
-
-### Streaming Support
-Get real-time responses with proper event types:
-```bash
-# Streaming works out of the box
 curl -N http://localhost:8088/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk-your-key" \
-  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Stream this"}],"stream":true}'
-```
-
-### Policy-aware routing
-- Local alias files (`--router-config`) and remote Routers (schema 1.1)
-- Stickiness tokens, cache TTLs, and freeze keys for deterministic routing
-- Micro-unit cost hints and tier metadata surfaced via `X-Route-*` headers
-- Reference spec: [`ROUTER_API_SPEC.md`](ROUTER_API_SPEC.md)
-
-### Library Usage
-Use as a Rust library for in-process conversion:
-
-```rust
-use routiium::to_responses_request;
-use routiium::models::chat::ChatCompletionRequest;
-
-let chat_request = ChatCompletionRequest { /* ... */ };
-let responses_request = to_responses_request(&chat_request, None);
-```
-
-## Configuration
-
-Set these environment variables:
-
-```bash
-# Required
-OPENAI_BASE_URL=https://api.openai.com/v1        # Upstream base URL (mandatory)
-
-# Optional (Upstream behavior)
-OPENAI_API_KEY=sk-your-key                       # Used if Authorization header is not provided
-BIND_ADDR=0.0.0.0:8088                           # Server address
-# NOTE: Service mirrors OpenAI endpoints: use /v1/chat/completions for Chat payloads, /v1/responses for native Responses payloads.
-ROUTIIUM_UPSTREAM_INPUT=0                   # If 1/true, derive and send top-level "input" when upstream requires it
-
-# Optional (Proxy/network)
-ROUTIIUM_PROXY_URL=                         # Proxy for all schemes (e.g., http://user:pass@host:port)
-HTTP_PROXY=                                      # Standard env var for HTTP proxy
-HTTPS_PROXY=                                     # Standard env var for HTTPS proxy
-ROUTIIUM_NO_PROXY=0                         # If 1/true, disable all proxy usage
-ROUTIIUM_HTTP_TIMEOUT_SECONDS=60            # Global HTTP client timeout (seconds)
-
-# Optional (CORS)
-CORS_ALLOWED_ORIGINS=*                           # "*" or comma-separated origins
-CORS_ALLOWED_METHODS=*                           # "*" or comma-separated (GET,POST,...)
-CORS_ALLOWED_HEADERS=*                           # "*" or comma-separated header names
-CORS_ALLOW_CREDENTIALS=0                         # If 1/true, allow credentials
-CORS_MAX_AGE=3600                                # Preflight max-age (seconds)
-
-# Optional (API key management & auth)
-# Backend selection is runtime-based:
-# - If ROUTIIUM_REDIS_URL is set, Redis is used (r2d2 pool).
-# - Else, if built with the `sled` feature, sled is used (when present).
-# - Else, in-memory store is used (non-persistent, for dev/tests).
-ROUTIIUM_REDIS_URL=                         # e.g., redis://127.0.0.1/
-ROUTIIUM_REDIS_POOL_MAX=16                  # r2d2 pool max size for Redis
-ROUTIIUM_SLED_PATH=./data/keys.db           # Path for sled data (only when built with sled feature)
-
-# Key lifecycle policy
-ROUTIIUM_KEYS_REQUIRE_EXPIRATION=1          # If 1/true, keys must have expiration at creation
-ROUTIIUM_KEYS_ALLOW_NO_EXPIRATION=0         # If 1/true, allow non-expiring keys (not recommended)
-ROUTIIUM_KEYS_DEFAULT_TTL_SECONDS=86400     # Default TTL (seconds) used if not explicitly provided
-```
-
-### API Key Backends
-- Redis: enable by setting `ROUTIIUM_REDIS_URL` at runtime. Pool size via `ROUTIIUM_REDIS_POOL_MAX`.
-- Sled: available when compiled with the `sled` feature; set `ROUTIIUM_SLED_PATH` for database path. Used only if Redis URL is not set.
-- Memory: fallback non-persistent store for development/testing when neither Redis is configured nor sled is available.
-
-### API Key Policy
-- Tokens are opaque: `sk_<id>.<secret>` (ID is 32 hex chars, secret is 64 hex chars).
-- Secrets are never stored; verification uses salted `SHA-256(salt || secret)` with constant-time compare.
-- By default, expiration is required at creation (`ROUTIIUM_KEYS_REQUIRE_EXPIRATION=1`), using either `ttl_seconds` or `expires_at`. You can allow non-expiring keys only if `ROUTIIUM_KEYS_ALLOW_NO_EXPIRATION=1`.
-- A default TTL can be set via `ROUTIIUM_KEYS_DEFAULT_TTL_SECONDS`.
-
-## API Endpoints
-
-| Endpoint | Purpose | Requires API Key |
-|----------|---------|------------------|
-| `POST /convert` | Convert request format only | No |
-| `POST /proxy` | Convert + forward to OpenAI | Yes (Authorization: Bearer ...) |
-| `POST /v1/chat/completions` | Native Chat Completions passthrough with system prompt injection | Yes |
-| `POST /v1/responses` | Native Responses API passthrough with system prompt injection | Yes |
-| `GET /status` | Service status, available routes, and feature flags | No |
-| `GET /keys` | List API keys (`id`, `label`, `created_at`, `expires_at`, `revoked_at`, `scopes`) | No (protect via network ACL) |
-| `POST /keys/generate` | Create a new API key; body supports `label`, `ttl_seconds` or `expires_at`, and `scopes` | No (protect via network ACL) |
-| `POST /keys/revoke` | Revoke an API key; body: `{ "id": "<key-id>" }` | No (protect via network ACL) |
-| `POST /keys/set_expiration` | Set/clear expiration; body: `{ "id": "...", "expires_at": <epoch>|null, "ttl_seconds": <u64> }` | No (protect via network ACL) |
-| `POST /reload/mcp` | Reload MCP configuration at runtime | No (protect via network ACL) |
-| `POST /reload/system_prompt` | Reload system prompt configuration at runtime | No (protect via network ACL) |
-| `POST /reload/all` | Reload both MCP and system prompt configurations | No (protect via network ACL) |
-
-Notes:
-- `/proxy` authentication (OpenAI-compatible):  
-  - Managed mode (server has `OPENAI_API_KEY`): client sends `Authorization: Bearer <issued_access_token>` (an internally issued access key, not the upstream OpenAI key). The proxy verifies it and uses the server `OPENAI_API_KEY` upstream.  
-  - Passthrough mode (no `OPENAI_API_KEY` set): client sends `Authorization: Bearer <openai_api_key>` which is forwarded upstream unchanged.  
-  Example (managed): `-H "Authorization: Bearer sk_<id>.<secret>"`.
-- Key management endpoints do not implement separate admin auth; deploy behind a trusted network, reverse proxy ACL, or service mesh policy.
-
-Both endpoints accept standard Chat Completions JSON and support `?conversation_id=...` for stateful conversations.
-
-## Chat vs Responses API
-
-Chat Completions (Legacy)
-- Stateless — send full history each time
-- Limited streaming events
-- Client manages conversation state
-
-Responses API (Modern)
-- Optional server-side conversation state
-- Rich streaming with typed events
-- Unified tool and multimodal handling
-- Better for AI agents and complex flows
-
-Routiium lets you get Responses API benefits while keeping your existing Chat Completions code.
-
-## Use with vLLM, Ollama & Local Models
-
-Many popular inference servers only support the Chat Completions API:
-- vLLM — High-performance inference server
-- Ollama — Local model runner
-- Text Generation WebUI — Popular local interface
-- FastChat — Multi-model serving
-- LocalAI — Local OpenAI alternative
-
-Place Routiium in front of these services to instantly add Responses API support:
-
-```bash
-# Point to your local vLLM server
-OPENAI_BASE_URL=http://localhost:8000/v1 routiium
-```
-
-Now your local models support the modern Responses API format. Your applications get better streaming, tool traces, and conversation state while your local inference server keeps running unchanged.
-
-## MCP Integration
-
-Routiium can connect to Model Context Protocol (MCP) servers to provide additional tools to the LLM. When MCP servers are configured, their tools are automatically merged with any tools specified in the original request.
-
-### Setting up MCP
-
-1) Create an MCP configuration file (`mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-    },
-    "brave-search": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
-      "env": {
-        "BRAVE_API_KEY": "your-brave-api-key-here"
-      }
-    },
-    "postgres": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-postgres"],
-      "env": {
-        "POSTGRES_CONNECTION_STRING": "postgresql://user:password@localhost:5432/database"
-      }
-    }
-  }
-}
-```
-
-2) Start the server with MCP support:
-
-```bash
-OPENAI_BASE_URL=https://api.openai.com/v1 routiium mcp.json
-```
-
-3) Available MCP Servers:
-- `@modelcontextprotocol/server-filesystem` — File system operations
-- `@modelcontextprotocol/server-brave-search` — Web search via Brave
-- `@modelcontextprotocol/server-postgres` — PostgreSQL database access
-- `@modelcontextprotocol/server-github` — GitHub API integration
-- Many more available on npm
-
-### How MCP Tools Work
-
-- MCP tools are automatically discovered and added to the available tool list.
-- Tool names are prefixed with the server name (e.g., `filesystem_read_file`).
-- The LLM can call MCP tools just like regular function tools.
-- Tool execution happens automatically and results are injected into the conversation.
-- Multiple MCP servers can run simultaneously.
-
-### Example Request with MCP Tools
-
-When MCP servers are connected, your regular Chat Completions request automatically gains access to their tools:
-
-```bash
-curl -X POST http://localhost:8088/proxy \
+  -H "Authorization: Bearer sk_test.abcdef..." \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-4o",
-    "messages": [
-      {"role": "user", "content": "Search for recent news about AI and save the results to a file"}
-    ]
-  }'
+        "model":"gpt-4o-mini",
+        "messages":[{"role":"user","content":"Stream this"}],
+        "stream": true
+      }'
 ```
 
-The LLM will automatically have access to both `brave-search_search` and `filesystem_write_file` tools.
-
-## Runtime Configuration Reloading
-
-Routiium supports **runtime reloading** of both MCP tools and system prompts without restarting the server. This enables dynamic configuration updates in production environments.
-
-### MCP Runtime Reload
-
-Once started with an MCP configuration file, you can reload the MCP configuration at runtime:
+Need a container? The repo ships with a `Dockerfile`:
 
 ```bash
-# Start with MCP configuration
-routiium mcp.json
-
-# Later, update mcp.json and reload without restarting
-curl -X POST http://localhost:8088/reload/mcp
+docker build -t routiium .
+docker run --rm -p 8088:8088 \
+  -e OPENAI_API_KEY=sk-your-upstream-key \
+  routiium
 ```
 
-Response:
-```json
-{
-  "success": true,
-  "message": "MCP configuration reloaded",
-  "servers": ["filesystem", "brave-search"],
-  "count": 2
-}
-```
+## CLI Flags
 
-### System Prompt Configuration
+| Flag | Description |
+| ---- | ----------- |
+| `--keys-backend=redis://...|sled:<path>|memory` | Override the API key store (defaults to Redis via `ROUTIIUM_REDIS_URL`, else sled, else memory). |
+| `--mcp-config=PATH` | Load Model Context Protocol server definitions (see `mcp.json.example`). |
+| `--system-prompt-config=PATH` | Load system prompt injection rules (see `system_prompt.json.example`). |
+| `--router-config=PATH` | Load a local alias/policy file consumed by the `LocalPolicyRouter` (`router_aliases.json.example`). |
+| `--routing-config=PATH` | Load an experimental routing JSON that is surfaced in `/status` and reload endpoints (routing decisions still come from the Router client + `ROUTIIUM_BACKENDS`). |
 
-System prompts can be injected into all requests automatically. Create a `system_prompt.json` configuration file:
+## Environment Reference
 
-```json
-{
-  "global": "You are a helpful AI assistant. Always be respectful and informative.",
-  "per_model": {
-    "gpt-4": "You are an expert AI assistant powered by GPT-4.",
-    "claude-3-5-sonnet-20241022": "You are Claude, created by Anthropic."
-  },
-  "per_api": {
-    "chat": "This is a Chat Completions API request.",
-    "responses": "This is a Responses API request."
-  },
-  "injection_mode": "prepend",
-  "enabled": true
-}
-```
+Routiium loads `.env`, `.envfile`, or any path referenced via `ENV_FILE`, `ENVFILE`, or `DOTENV_PATH` before reading the rest of the environment.
 
-**Configuration Fields:**
-- `global`: Default system prompt for all requests
-- `per_model`: Model-specific prompts (override `global`)
-- `per_api`: API-specific prompts for "chat" or "responses" endpoints
-- `injection_mode`: How to inject the prompt:
-  - `"prepend"` (default): Add before existing system messages
-  - `"append"`: Add after existing system messages
-  - `"replace"`: Replace all existing system messages
-- `enabled`: Toggle system prompt injection on/off
+### Server & HTTP
 
-**Priority order:** `per_model` > `per_api` > `global`
+- `BIND_ADDR` – listen address (default `0.0.0.0:8088`).
+- `RUST_LOG` – tracing filter, e.g. `info,tower_http=info`.
+- `OPENAI_BASE_URL` – default upstream base URL (`https://api.openai.com/v1`).
+- `OPENAI_API_KEY` – presence enables managed auth and serves as the fallback upstream bearer.
+- `MODEL` – default model when the client omits `model`.
+- `ROUTIIUM_UPSTREAM_MODE` – `responses` (default) or `chat`; `chat` rewrites upstream calls to `/v1/chat/completions` and converts payloads (handy for vLLM/Ollama).
+- `ROUTIIUM_HTTP_TIMEOUT_SECONDS` – reqwest client timeout.
+- `ROUTIIUM_NO_PROXY`, `ROUTIIUM_PROXY_URL`, `HTTP_PROXY`/`http_proxy`, `HTTPS_PROXY`/`https_proxy` – proxy controls.
+- `CORS_ALLOWED_ORIGINS`, `CORS_ALLOWED_METHODS`, `CORS_ALLOWED_HEADERS`, `CORS_ALLOW_CREDENTIALS`, `CORS_MAX_AGE` – CORS policy knobs.
 
-### Starting with System Prompts
+### Routing & Upstream Selection
+
+- `ROUTIIUM_BACKENDS` – semicolon-separated rules (`prefix`, `base`/`base_url`, optional `key_env`, optional `mode=responses|chat`). Example:
+
+  ```bash
+  export OPENAI_API_KEY=sk-openai...
+  export ANTHROPIC_API_KEY=sk-anthropic...
+  export ROUTIIUM_BACKENDS="prefix=gpt-;base=https://api.openai.com/v1;key_env=OPENAI_API_KEY;mode=responses; prefix=claude-;base=https://api.anthropic.com/v1;key_env=ANTHROPIC_API_KEY;mode=responses; prefix=llama;base=http://localhost:11434/v1;mode=chat"
+  ```
+
+- `ROUTIIUM_ROUTER_URL` – enable the HTTP Router client (Schema 1.1). Helper env vars:
+  - `ROUTIIUM_ROUTER_TIMEOUT_MS` – router request timeout (default 15 ms).
+  - `ROUTIIUM_CACHE_TTL_MS` – plan cache TTL (default 15000 ms).
+  - `ROUTIIUM_ROUTER_PRIVACY_MODE=features|summary|full` – how much request context is sent to the router.
+  - `ROUTIIUM_ROUTER_STRICT` – when truthy, fail the request if the router rejects the alias (no legacy fallback).
+  - `ROUTIIUM_ROUTER_MTLS` – set to enable mutual TLS (expects OS-level cert configuration).
+
+### Authentication & Key Storage
+
+- `ROUTIIUM_REDIS_URL` – use Redis for the API key store.
+- `ROUTIIUM_REDIS_POOL_MAX` – r2d2 pool size for Redis (default 16).
+- `ROUTIIUM_SLED_PATH` – path for the embedded sled database (default `./data/keys.db` when the `sled` feature is enabled).
+- `ROUTIIUM_KEYS_REQUIRE_EXPIRATION`, `ROUTIIUM_KEYS_ALLOW_NO_EXPIRATION`, `ROUTIIUM_KEYS_DEFAULT_TTL_SECONDS` – key issuance policy toggles.
+
+### Analytics & Pricing
+
+- `ROUTIIUM_ANALYTICS_REDIS_URL`, `ROUTIIUM_ANALYTICS_SLED_PATH`, `ROUTIIUM_ANALYTICS_JSONL_PATH` – choose the analytics backend (JSONL at `data/analytics.jsonl` is the default).
+- `ROUTIIUM_ANALYTICS_TTL_SECONDS` – automatic expiration for Redis/Sled entries.
+- `ROUTIIUM_ANALYTICS_FORCE_MEMORY`, `ROUTIIUM_ANALYTICS_MAX_EVENTS` – force the in-memory backend and cap retained events.
+- `ROUTIIUM_PRICING_CONFIG` – path to custom pricing JSON (falls back to built-in OpenAI price cards).
+
+## HTTP APIs
+
+| Route | Description | Auth |
+| ----- | ----------- | ---- |
+| `GET /status` | Feature flags, config file paths, routing stats, analytics status. | None |
+| `POST /convert` | Convert a Chat Completions payload into a Responses payload (applies system prompts, merges MCP tools, supports `conversation_id`). | None |
+| `POST /v1/responses` | Native Responses proxy (handles system prompts, legacy tool formats, routing, analytics, streaming). | Managed or passthrough bearer |
+| `POST /v1/chat/completions` | Native Chat Completions proxy with prompt injection and optional conversion of Responses-shaped upstream bodies. | Managed or passthrough bearer |
+| `GET /keys` | List issued API keys (id, label, timestamps, scopes). | Protect via network ACLs |
+| `POST /keys/generate` | Issue a new `sk_<id>.<secret>` token; body supports `label`, `ttl_seconds`, `expires_at`, `scopes`. | Protect via network ACLs |
+| `POST /keys/revoke` | Revoke a key by id. | Protect via network ACLs |
+| `POST /keys/set_expiration` | Set or clear expiration on an existing key. | Protect via network ACLs |
+| `POST /reload/mcp` | Reload the MCP config and reconnect servers. | Typically internal |
+| `POST /reload/system_prompt` | Reload the system prompt config. | Typically internal |
+| `POST /reload/routing` | Reload the optional routing JSON (currently surfaces metadata only). | Typically internal |
+| `POST /reload/all` | Reload MCP + system prompt configs. | Typically internal |
+| `GET /analytics/stats` | Analytics backend stats (requires analytics enabled). | Internal |
+| `GET /analytics/events` | Query raw analytics events (`start`, `end`, `limit`). | Internal |
+| `GET /analytics/aggregate` | Aggregate metrics for a time window. | Internal |
+| `GET /analytics/export` | Export events as JSON (`format=json`) or CSV (`format=csv`). | Internal |
+| `POST /analytics/clear` | Wipe analytics storage. | Internal |
+
+## Authentication Modes
+
+1. **Managed mode** (recommended): set `OPENAI_API_KEY` (and any additional provider env vars referenced by routing rules). Clients call Routiium with internally issued tokens (`sk_<id>.<secret>`). The proxy validates them through `ApiKeyManager` before substituting provider secrets upstream.
+2. **Passthrough mode**: leave `OPENAI_API_KEY` unset. Clients send their provider key in `Authorization: Bearer ...` and Routiium forwards it upstream unchanged (still applying conversion, routing, analytics, etc.).
+
+## Multi-backend Routing & Router Integration
+
+When resolving an upstream:
+
+1. If `--router-config` or `ROUTIIUM_ROUTER_URL` is configured, Routiium asks the Router for a plan (Schema 1.1, see [`ROUTER_API_SPEC.md`](ROUTER_API_SPEC.md)). Plans return the upstream base URL, API mode (`responses` or `chat`), optional auth env var, stickiness tokens, headers, and policy metadata. Successful plans are cached for `ROUTIIUM_CACHE_TTL_MS` and surfaced to clients via headers like `x-route-id`, `x-resolved-model`, `router-schema`, and `x-policy-rev`.
+2. If the Router rejects the alias (or is unavailable and `ROUTIIUM_ROUTER_STRICT` is not set), Routiium falls back to `ROUTIIUM_BACKENDS`, selecting the first rule whose `prefix` matches the requested model. `mode=chat` rewrites the upstream URL to `/v1/chat/completions` and converts payloads so you can front services such as vLLM or Ollama with a Responses surface.
+3. If neither mechanism matches, the proxy uses `OPENAI_BASE_URL` and whichever `model` the client supplied (or the `MODEL` env fallback).
+
+The optional `routing.json` loader (see `routing.json.example`) tracks richer policies for observability and `/status` output. Routing decisions today still use the Router client + `ROUTIIUM_BACKENDS`; the JSON file exists so you can version policies and inspect rule stats even before the full engine lands.
+
+### Router Contract (Schema 1.1)
+
+The Router integration follows the full Schema 1.1 contract captured in [`ROUTER_API_SPEC.md`](ROUTER_API_SPEC.md). Highlights:
+
+- Every `RouteRequest`/`RoutePlan` exchanges `schema_version`, `request_id`, cache hints, and typed error metadata so upgrades remain safe.
+- Budgets, estimates, and cost hints use **micro** units; routers can emit tokenizer hints, latency/cost targets, stickiness tokens, and prompt overlay metadata.
+- Cache + stickiness semantics (`ttl_ms`, `valid_until`, `freeze_key`, `plan_token`) let Routiium deterministically reuse plans while `X-Route-Cache` and `Router-Schema` headers provide observability.
+- Privacy controls (`privacy_mode`, `content_attestation`, `content_used`) make it explicit how much transcript content the router consumed.
+- `RouteFeedback`, `plan_batch`, `prefetch`, and the catalog endpoints (`/catalog/models`) are part of the same spec; Routiium ships `examples/router_service.rs` as a runnable reference implementation.
+
+If you are implementing a Router, start with that document—the server expects the exact fields, headers, and error codes described there and falls back gracefully only when `ROUTIIUM_ROUTER_STRICT` is disabled.
+
+## System Prompts & MCP Tools
+
+- **System prompts:** `--system-prompt-config` points to a JSON file with `global`, `per_model`, and `per_api` prompts plus an `injection_mode` (`prepend`, `append`, or `replace`). Prompts are applied to `/v1/responses`, `/v1/chat/completions`, and `/convert`, and you can hot-reload the file via `/reload/system_prompt`.
+- **Model Context Protocol:** `--mcp-config` points to your MCP config (`mcp.json`). On boot Routiium spawns each MCP server, lists available tools, and merges them into every request so clients automatically see both their declared tools and MCP-provided ones. Tool names are prefixed with `serverName_` (`filesystem_read_directory`, `postgres_run_query`, etc.). Use `/reload/mcp` after editing the config.
+
+## API Key Lifecycle
+
+`ApiKeyManager` issues opaque tokens (`sk_<id>.<secret>`) whose secrets are never persisted (salted SHA-256 hashes only):
+
+- Backends are auto-detected at runtime (`ROUTIIUM_REDIS_URL` → Redis, else sled through the default `sled` feature, else memory). Override with `--keys-backend`.
+- Redis pool size is controlled through `ROUTIIUM_REDIS_POOL_MAX`.
+- Expiration policy is governed by `ROUTIIUM_KEYS_REQUIRE_EXPIRATION`, `ROUTIIUM_KEYS_ALLOW_NO_EXPIRATION`, and `ROUTIIUM_KEYS_DEFAULT_TTL_SECONDS`.
+- `/keys`, `/keys/generate`, `/keys/revoke`, and `/keys/set_expiration` cover the full key lifecycle. Secure these endpoints via network ACLs, sidecars, or service mesh policy; Routiium does not implement a separate admin role.
+
+Managed mode validates tokens on every call; passthrough mode skips the manager and forwards whatever bearer the client sent.
+
+## Analytics & Pricing
+
+Every request flows through `analytics_middleware`, which captures:
+
+- Request metadata (endpoint, method, model, payload size, streaming flag, user agent, client IP).
+- Response metadata (status, body size, error message, streaming duration).
+- Auth metadata (key id + label when present, auth method).
+- Routing metadata (backend string, upstream mode, whether MCP/system prompts were used).
+- Token usage (prompt/completion/cached/reasoning tokens) and computed cost via `PricingConfig`.
+
+Storage backends:
+
+- JSONL (`data/analytics.jsonl` by default; override via `ROUTIIUM_ANALYTICS_JSONL_PATH`).
+- Redis (`ROUTIIUM_ANALYTICS_REDIS_URL`, optional `ROUTIIUM_ANALYTICS_TTL_SECONDS`).
+- Sled (`ROUTIIUM_ANALYTICS_SLED_PATH`, compiled in by default).
+- Memory (`ROUTIIUM_ANALYTICS_FORCE_MEMORY=1`, optional `ROUTIIUM_ANALYTICS_MAX_EVENTS`).
+
+Operators can inspect and manage analytics through `/analytics/stats`, `/analytics/events`, `/analytics/aggregate`, `/analytics/export?format=csv`, and `/analytics/clear`. Costs come from the built-in OpenAI price cards unless you point `ROUTIIUM_PRICING_CONFIG` at your own JSON (prefix matching is supported). See [ANALYTICS.md](ANALYTICS.md) for the complete data model.
+
+## Operations & Observability
+
+- **Status & reloads:** `GET /status` reports version info, enabled features, config paths, routing stats, and analytics state. `/reload/mcp`, `/reload/system_prompt`, `/reload/routing`, and `/reload/all` re-read their respective files without restarting the server.
+- **Route headers:** When a Router plan is used Routiium forwards headers such as `x-route-id`, `router-schema`, `x-policy-rev`, and `x-resolved-model` so clients can trace which upstream handled the request.
+- **Logging:** `init_tracing` discovers `.env`, `.envfile`, or whatever you point `ENV_FILE`/`ENVFILE`/`DOTENV_PATH` at, then configures `tracing-subscriber` based on `RUST_LOG`.
+- **Proxies & CORS:** `build_http_client_from_env` honors `ROUTIIUM_NO_PROXY`, `ROUTIIUM_PROXY_URL`, `HTTP_PROXY`, and `HTTPS_PROXY`. `cors_config_from_env` applies the `CORS_*` knobs.
+- **Docker:** The provided image defaults to `BIND_ADDR=0.0.0.0:8088` and `ROUTIIUM_SLED_PATH=/data/keys.db`; mount `/data` if you want persistent key storage.
+
+## Additional Documentation & Examples
+
+- [API_REFERENCE.md](API_REFERENCE.md) – exhaustive request/response documentation with curl snippets.
+- [ANALYTICS.md](ANALYTICS.md) – analytics architecture, storage backends, API responses.
+- [ROUTER_API_SPEC.md](ROUTER_API_SPEC.md) – Router schema 1.1 and implementation guide (see `examples/router_service.rs` for a runnable Router).
+- `mcp.json.example`, `system_prompt.json.example`, `router_aliases.json.example` – starter configs for MCP servers, system prompts, and local router aliases.
+- `routing.json.example` – example of the experimental routing metadata file surfaced via `/status`.
+
+## Development
 
 ```bash
-# Start with both MCP and system prompt configurations
-routiium mcp.json --system-prompt-config=system_prompt.json
-```
-
-### Reload System Prompts at Runtime
-
-```bash
-# Update system_prompt.json, then reload
-curl -X POST http://localhost:8088/reload/system_prompt
-```
-
-Response:
-```json
-{
-  "success": true,
-  "message": "System prompt configuration reloaded",
-  "enabled": true,
-  "has_global": true,
-  "per_model_count": 2,
-  "per_api_count": 2,
-  "injection_mode": "prepend"
-}
-```
-
-### Reload Everything at Once
-
-```bash
-# Reload both MCP and system prompt configurations
-curl -X POST http://localhost:8088/reload/all
-```
-
-Response:
-```json
-{
-  "mcp": {
-    "success": true,
-    "message": "MCP configuration reloaded",
-    "servers": ["filesystem", "brave-search"],
-    "count": 2
-  },
-  "system_prompt": {
-    "success": true,
-    "message": "System prompt configuration reloaded",
-    "enabled": true,
-    "has_global": true,
-    "per_model_count": 2,
-    "per_api_count": 2,
-    "injection_mode": "prepend"
-  }
-}
-```
-
-### System Prompt Injection Behavior
-
-System prompts are automatically injected into:
-- `/v1/chat/completions` — Chat Completions API requests
-- `/v1/responses` — Responses API requests  
-- `/convert` — Conversion endpoint
-
-**Example with system prompt injection:**
-
-Without system prompt config:
-```json
-{
-  "model": "gpt-4",
-  "messages": [
-    {"role": "user", "content": "Hello"}
-  ]
-}
-```
-
-With `global: "You are helpful"` and `injection_mode: "prepend"`:
-```json
-{
-  "model": "gpt-4",
-  "messages": [
-    {"role": "system", "content": "You are helpful"},
-    {"role": "user", "content": "Hello"}
-  ]
-}
-```
-
-### Check Configuration Status
-
-```bash
-curl http://localhost:8088/status
-```
-
-Response includes runtime configuration details:
-```json
-{
-  "name": "routiium",
-  "version": "0.1.1",
-  "proxy_enabled": true,
-  "routes": [...],
-  "features": {
-    "mcp": {
-      "enabled": true,
-      "config_path": "mcp.json",
-      "reloadable": true
-    },
-    "system_prompt": {
-      "enabled": true,
-      "config_path": "system_prompt.json",
-      "reloadable": true
-    }
-  }
-}
-```
-
-## Installation
-
-From crates.io (binary):
-```bash
-cargo install routiium
-```
-
-Run the CLI:
-```bash
-OPENAI_API_KEY=sk-your-key routiium [mcp.json] [--keys-backend=redis://...|sled:<path>|memory]
-```
-
-From source:
-```bash
-git clone https://github.com/labiium/routiium
-cd routiium
-cargo build --release
-```
-
-As a library:
-```toml
-[dependencies]
-routiium = "0.1"
-```
-
-## Testing
-
-```bash
-# Unit and integration tests
+cargo fmt
+cargo clippy --all-targets --all-features
 cargo test
-
-# With sled backend compiled (optional feature) and custom sled path:
-cargo test --features sled
-ROUTIIUM_SLED_PATH=./tmp/keys.db cargo test --features sled
-
-# With Redis backend at runtime (ensure a local Redis instance is available):
-export ROUTIIUM_REDIS_URL=redis://127.0.0.1/
-cargo test
-
-# Lints (fail on warnings)
-cargo clippy --all-targets -- -D warnings
-
-# End-to-end tests (requires Python)
-pip install -r e2e/requirements.txt
-pytest e2e/
 ```
 
-### Manual API Key Flows
-
-```bash
-# Generate a key (1-day TTL)
-curl -s -X POST http://localhost:8088/keys/generate \
-  -H "Content-Type: application/json" \
-  -d '{"label":"svc","ttl_seconds":86400}'
-
-# Use it with /v1/chat/completions
-curl -s -X POST "http://localhost:8088/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk_<id>.<secret>" \
-  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}'
-
-# List keys
-curl -s http://localhost:8088/keys
-
-# Revoke a key
-curl -s -X POST http://localhost:8088/keys/revoke \
-  -H "Content-Type: application/json" \
-  -d '{"id":"<key-id>"}'
-
-# Set expiration (1 hour from now)
-curl -s -X POST http://localhost:8088/keys/set_expiration \
-  -H "Content-Type: application/json" \
-  -d '{"id":"<key-id>","ttl_seconds":3600}'
-```
-
-## Analytics
-
-Routiium includes comprehensive analytics capabilities to track and analyze API usage, performance, and costs.
-
-### Configuration
-
-Analytics can use three different storage backends:
-
-1. **Redis** (recommended for production):
-```bash
-export ROUTIIUM_ANALYTICS_REDIS_URL=redis://localhost:6379
-export ROUTIIUM_ANALYTICS_TTL_SECONDS=2592000  # 30 days
-routiium
-```
-
-2. **Sled** (embedded database):
-```bash
-export ROUTIIUM_ANALYTICS_SLED_PATH=./analytics.db
-export ROUTIIUM_ANALYTICS_TTL_SECONDS=2592000
-routiium
-```
-
-3. **Memory** (development only):
-```bash
-export ROUTIIUM_ANALYTICS_MAX_EVENTS=10000
-routiium
-```
-
-### Analytics Endpoints
-
-#### Get Statistics
-```bash
-curl http://localhost:8088/analytics/stats
-```
-
-Returns:
-```json
-{
-  "total_events": 1542,
-  "backend_type": "redis",
-  "ttl_seconds": 2592000,
-  "max_events": null
-}
-```
-
-#### Query Events
-```bash
-# Last hour (default)
-curl http://localhost:8088/analytics/events
-
-# Custom time range with limit
-curl "http://localhost:8088/analytics/events?start=1704067200&end=1704153600&limit=100"
-```
-
-Returns:
-```json
-{
-  "events": [...],
-  "count": 42,
-  "start": 1704067200,
-  "end": 1704153600
-}
-```
-
-#### Get Aggregated Metrics
-```bash
-# Aggregate last hour
-curl http://localhost:8088/analytics/aggregate
-
-# Custom time range
-curl "http://localhost:8088/analytics/aggregate?start=1704067200&end=1704153600"
-```
-
-Returns:
-```json
-{
-  "total_requests": 1542,
-  "successful_requests": 1523,
-  "failed_requests": 19,
-  "total_input_tokens": 45230,
-  "total_output_tokens": 89441,
-  "total_cached_tokens": 12500,
-  "total_reasoning_tokens": 0,
-  "avg_duration_ms": 1247.3,
-  "avg_tokens_per_second": 71.6,
-  "total_cost": 5.43,
-  "cost_by_model": {
-    "gpt-4o": 3.21,
-    "gpt-4o-mini": 2.22
-  },
-  "models_used": {
-    "gpt-4o": 892,
-    "gpt-4o-mini": 650
-  },
-  "endpoints_hit": {
-    "/v1/chat/completions": 892,
-    "/v1/responses": 650
-  },
-  "backends_used": {
-    "openai": 1542
-  },
-  "period_start": 1704067200,
-  "period_end": 1704153600
-}
-```
-
-#### Export Analytics Data
-```bash
-# Export as JSON (default)
-curl "http://localhost:8088/analytics/export?start=1704067200&end=1704153600" -o analytics.json
-
-# Export as CSV
-curl "http://localhost:8088/analytics/export?start=1704067200&end=1704153600&format=csv" -o analytics.csv
-```
-
-CSV includes: `id, timestamp, endpoint, method, model, stream, status_code, success, duration_ms, tokens_per_second, prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, total_cost, backend, upstream_mode`
-
-#### Clear Analytics Data
-```bash
-curl -X POST http://localhost:8088/analytics/clear
-```
-
-### What's Tracked
-
-Each analytics event captures:
-
-**Request Metadata:**
-- Endpoint path
-- HTTP method
-- Model name
-- Streaming flag
-- Request size in bytes
-- Number of messages
-- Input token count
-- User agent
-- Client IP address
-
-**Response Metadata:**
-- HTTP status code
-- Response size in bytes
-- Output token count
-- Success/failure status
-- Error messages
-
-**Performance Metrics:**
-- Total request duration
-- Time to first byte (streaming)
-- Upstream request duration
-- **Tokens per second** (throughput)
-
-**Token Usage (Detailed):**
-- Prompt tokens
-- Completion tokens
-- Cached tokens (prompt caching)
-- Reasoning tokens (o1/o3 models)
-- Total tokens
-
-**Cost Tracking:**
-- Input cost (per request)
-- Output cost (per request)
-- Cached token cost
-- Total cost per request
-- Cost breakdowns by model
-
-**Authentication:**
-- Authentication status
-- API key ID (hashed)
-- API key label
-- Auth method
-
-**Routing Information:**
-- Backend used (OpenAI, Anthropic, etc.)
-- Upstream mode (chat/responses)
-- MCP enabled flag
-- MCP servers invoked
-- System prompt applied flag
-
-### Cost Tracking
-
-Analytics automatically calculates costs based on token usage and configurable pricing models.
-
-**Default Pricing** (OpenAI models as of January 2025):
-- GPT-4o: $2.50/1M input, $10.00/1M output, $1.25/1M cached
-- GPT-4o mini: $0.15/1M input, $0.60/1M output, $0.075/1M cached  
-- o1: $15.00/1M input, $60.00/1M output
-- o1-mini: $3.00/1M input, $12.00/1M output
-- GPT-4 Turbo: $10.00/1M input, $30.00/1M output
-- GPT-3.5 Turbo: $0.50/1M input, $1.50/1M output
-
-**Custom Pricing Configuration:**
-
-Create a JSON file with your pricing:
-
-```json
-{
-  "models": {
-    "claude-3-opus": {
-      "input_per_million": 15.00,
-      "output_per_million": 75.00,
-      "cached_per_million": null,
-      "reasoning_per_million": null
-    },
-    "claude-3-sonnet": {
-      "input_per_million": 3.00,
-      "output_per_million": 15.00
-    }
-  },
-  "default": {
-    "input_per_million": 2.50,
-    "output_per_million": 10.00,
-    "cached_per_million": 1.25
-  }
-}
-```
-
-Load it via environment variable:
-```bash
-export ROUTIIUM_PRICING_CONFIG=/path/to/pricing.json
-routiium
-```
-
-The pricing system supports:
-- Model-specific pricing with prefix matching (e.g., "gpt-4o" matches "gpt-4o-2024-08-06")
-- Cached token pricing (prompt caching discounts)
-- Reasoning token pricing (for o1/o3 models)
-- Fallback to default pricing for unknown models
-
-### Environment Variables
-
-- `ROUTIIUM_ANALYTICS_REDIS_URL`: Redis connection URL
-- `ROUTIIUM_ANALYTICS_SLED_PATH`: Path for Sled database
-- `ROUTIIUM_ANALYTICS_MAX_EVENTS`: Max events in memory mode (default: 10000)
-- `ROUTIIUM_ANALYTICS_TTL_SECONDS`: Time-to-live for events in seconds
-- `ROUTIIUM_PRICING_CONFIG`: Path to custom pricing configuration JSON file
-
-## Examples
-
-<details>
-<summary>Convert with tools</summary>
-
-```bash
-curl -X POST http://localhost:8088/convert \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4o",
-    "messages": [{"role": "user", "content": "What is the weather?"}],
-    "tools": [{
-      "type": "function",
-      "function": {
-        "name": "get_weather",
-        "description": "Get weather info",
-        "parameters": {
-          "type": "object",
-          "properties": {"location": {"type": "string"}},
-          "required": ["location"]
-        }
-      }
-    }]
-  }'
-```
-</details>
-
-<details>
-<summary>Proxy with conversation ID</summary>
-
-```bash
-curl -X POST "http://localhost:8088/v1/responses" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk-your-key" \
-  -d '{
-    "model": "gpt-4o",
-    "conversation": "chat-123",
-    "input": [
-      {"role": "user", "content": "Remember this conversation"}
-    ]
-  }'
-```
-</details>
-
-## License
-
-Apache-2.0
-
-## Links
-
-- [OpenAI Responses API Guide](https://platform.openai.com/docs/guides/responses)
-- (Legacy reference) [OpenAI Chat Completions API](https://platform.openai.com/docs/api-reference/chat)
+There is also a `python_tests/` directory with HTTP smoke tests; activate your preferred Python environment and run `pytest` if you modify the HTTP surface.

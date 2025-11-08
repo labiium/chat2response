@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "injection_mode": "prepend",
+  "global": "System prompt: global testing",
+  "per_api": {
+    "chat": "System prompt: chat injection",
+    "responses": "System prompt: responses injection"
+  },
+  "per_model": {
+    "gpt-4o-mini": "System prompt: model gpt-4o-mini"
+  }
+}

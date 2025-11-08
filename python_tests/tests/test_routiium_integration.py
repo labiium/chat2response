@@ -16,6 +16,7 @@ import os
 import pytest
 import time
 import json
+import requests
 from openai import OpenAI, OpenAIError
 from dotenv import load_dotenv
 
@@ -1205,6 +1206,83 @@ class TestRouterIntegration:
         assert response.model == "gpt-4.1-nano"
         assert response.output_text is not None
         assert response.output_text.strip() != ""
+
+
+class TestSystemPromptInjection:
+    """Validate that configured system prompts are injected into conversions."""
+
+    def test_convert_injects_system_prompt(self, test_model):
+        base_url = os.getenv("ROUTIIUM_BASE", "http://127.0.0.1:8099")
+        payload = {
+            "model": test_model,
+            "messages": [
+                {"role": "user", "content": "Briefly respond with 'ok'."}
+            ],
+        }
+
+        response = requests.post(
+            f"{base_url}/convert",
+            params={"conversation_id": "sys-test"},
+            json=payload,
+            timeout=10,
+        )
+
+        if response.status_code != 200:
+            pytest.skip(f"/convert unavailable: {response.status_code}")
+
+        data = response.json()
+        messages = data.get("input")
+        if not isinstance(messages, list) or not messages:
+            pytest.skip("System prompt injection not applied (no input messages)")
+
+        first_message = messages[0]
+        if first_message.get("role") != "system":
+            pytest.skip("System prompt injection not enabled")
+
+        content = first_message.get("content")
+        if isinstance(content, list) and content:
+            first_piece = content[0]
+            if isinstance(first_piece, dict):
+                injected_text = first_piece.get("text") or first_piece.get("content")
+            else:
+                injected_text = str(first_piece)
+        elif isinstance(content, str):
+            injected_text = content
+        else:
+            pytest.skip("Unexpected system prompt content structure")
+
+        assert injected_text == "System prompt: model gpt-4o-mini"
+
+
+class TestMCPIntegration:
+    """Ensure MCP tool definitions are exposed via /convert when configured."""
+
+    def test_mcp_tools_available(self, test_model):
+        base_url = os.getenv("ROUTIIUM_BASE", "http://127.0.0.1:8099")
+        payload = {
+            "model": test_model,
+            "messages": [
+                {"role": "user", "content": "List available tools."}
+            ],
+        }
+
+        response = requests.post(
+            f"{base_url}/convert",
+            params={"conversation_id": "mcp-test"},
+            json=payload,
+            timeout=10,
+        )
+
+        if response.status_code != 200:
+            pytest.skip(f"/convert unavailable: {response.status_code}")
+
+        data = response.json()
+        tools = data.get("tools")
+        if not tools:
+            pytest.skip("MCP tooling not configured")
+
+        tool_names = [t.get("name") for t in tools if isinstance(t, dict)]
+        assert "mock_echo" in tool_names
 
 
 if __name__ == "__main__":

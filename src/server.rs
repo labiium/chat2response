@@ -840,6 +840,24 @@ async fn chat_completions_passthrough(
     }
     drop(system_prompt_guard);
 
+    // Remove explicit null content fields (tool call responses don't require them)
+    if let Some(messages) = body.get_mut("messages").and_then(|v| v.as_array_mut()) {
+        for message in messages {
+            if let Some(obj) = message.as_object_mut() {
+                if obj
+                    .get("content")
+                    .map(|value| value.is_null())
+                    .unwrap_or(false)
+                {
+                    obj.insert(
+                        "content".to_string(),
+                        serde_json::Value::String(String::new()),
+                    );
+                }
+            }
+        }
+    }
+
     // Determine managed (internal upstream key) vs passthrough mode
     let env_api_key = std::env::var("OPENAI_API_KEY")
         .ok()
@@ -950,12 +968,18 @@ async fn chat_completions_passthrough(
             .and_then(|req| serde_json::to_value(req).ok())
     };
 
+    let expects_responses = resolution
+        .plan
+        .as_ref()
+        .map(|plan| matches!(plan.upstream.mode, RouterUpstreamMode::Responses))
+        .unwrap_or_else(|| matches!(resolution.mode, crate::util::UpstreamMode::Responses));
+
     if stream {
         use bytes::Bytes;
-        use futures_util::TryStreamExt;
+        use futures_util::{stream::StreamExt, TryStreamExt};
 
         let mut outbound_body = body.clone();
-        if matches!(resolution.mode, crate::util::UpstreamMode::Responses) {
+        if expects_responses {
             if let Some(converted) = convert_chat_to_responses(&outbound_body) {
                 outbound_body = converted;
             } else {
@@ -988,10 +1012,16 @@ async fn chat_completions_passthrough(
                     return builder.body(bytes);
                 }
                 let upstream_ct = up.headers().get("content-type").cloned();
-                let stream = up
+                let base_stream = up
                     .bytes_stream()
                     .map_err(|e| std::io::Error::other(e.to_string()))
                     .map_ok(Bytes::from);
+
+                let stream = if expects_responses {
+                    ResponsesSseToChatSse::new(base_stream).boxed()
+                } else {
+                    base_stream.boxed()
+                };
 
                 let mut response = HttpResponse::Ok();
                 if let Some(ct) = upstream_ct {
@@ -1016,7 +1046,7 @@ async fn chat_completions_passthrough(
         }
     } else {
         let mut outbound_body = body.clone();
-        if matches!(resolution.mode, crate::util::UpstreamMode::Responses) {
+        if expects_responses {
             if let Some(converted) = convert_chat_to_responses(&outbound_body) {
                 outbound_body = converted;
             } else {
@@ -1041,28 +1071,26 @@ async fn chat_completions_passthrough(
                 );
                 if let Some(plan) = resolution.plan.as_ref() {
                     insert_route_headers(&mut builder, plan, &resolution.model_id);
-                    if status.is_success()
-                        && matches!(plan.upstream.mode, RouterUpstreamMode::Responses)
-                    {
-                        match serde_json::from_slice::<responses::ResponsesResponse>(&bytes) {
-                            Ok(resp_obj) => {
-                                let chat_resp = responses_to_chat_response(&resp_obj);
-                                match serde_json::to_vec(&chat_resp) {
-                                    Ok(body) => {
-                                        builder.insert_header(("content-type", "application/json"));
-                                        return builder.body(body);
-                                    }
-                                    Err(err) => tracing::debug!(
-                                        "Failed to serialize chat conversion payload: {}",
-                                        err
-                                    ),
+                }
+                if status.is_success() && expects_responses {
+                    match serde_json::from_slice::<responses::ResponsesResponse>(&bytes) {
+                        Ok(resp_obj) => {
+                            let chat_resp = responses_to_chat_response(&resp_obj);
+                            match serde_json::to_vec(&chat_resp) {
+                                Ok(body) => {
+                                    builder.insert_header(("content-type", "application/json"));
+                                    return builder.body(body);
                                 }
+                                Err(err) => tracing::debug!(
+                                    "Failed to serialize chat conversion payload: {}",
+                                    err
+                                ),
                             }
-                            Err(err) => tracing::debug!(
-                                "Failed to parse Responses payload for chat conversion: {}",
-                                err
-                            ),
                         }
+                        Err(err) => tracing::debug!(
+                            "Failed to parse Responses payload for chat conversion: {}",
+                            err
+                        ),
                     }
                 }
                 builder.body(bytes)
