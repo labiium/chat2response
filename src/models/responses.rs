@@ -94,6 +94,10 @@ pub struct ResponsesRequest {
     // Optional: stateful conversation id in Responses
     #[serde(default)]
     pub conversation: Option<String>,
+
+    /// Optional pointer to a prior Responses ID (state chaining)
+    #[serde(default)]
+    pub previous_response_id: Option<String>,
 }
 
 impl Serialize for ResponsesRequest {
@@ -178,6 +182,9 @@ impl Serialize for ResponsesRequest {
         }
         if let Some(conv) = self.conversation.as_ref() {
             root.insert("conversation".into(), Value::String(conv.clone()));
+        }
+        if let Some(prev) = self.previous_response_id.as_ref() {
+            root.insert("previous_response_id".into(), Value::String(prev.clone()));
         }
 
         Value::Object(root).serialize(serializer)

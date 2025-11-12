@@ -33,7 +33,7 @@ curl -N http://localhost:8088/v1/chat/completions \
   -H "Authorization: Bearer sk_test.abcdef..." \
   -H "Content-Type: application/json" \
   -d '{
-        "model":"gpt-4o-mini",
+        "model":"gpt-4.1-nano",
         "messages":[{"role":"user","content":"Stream this"}],
         "stream": true
       }'
@@ -47,6 +47,18 @@ docker run --rm -p 8088:8088 \
   -e OPENAI_API_KEY=sk-your-upstream-key \
   routiium
 ```
+
+### Docker Compose
+
+The repository now ships with a `docker-compose.yml` that builds the local image, maps `8088`, and persists the sled database volume. Provide your upstream credentials in `.env` (Compose reads it automatically):
+
+```bash
+cp .env.example .env
+echo "OPENAI_API_KEY=sk-your-upstream-key" >> .env
+docker compose up --build
+```
+
+Override the public port by exporting `ROUTIIUM_PORT`, and pass additional routing knobs (e.g. `ROUTIIUM_BACKENDS`, `ROUTIIUM_ROUTER_URL`) via `.env` or your shell.
 
 ## CLI Flags
 
@@ -214,3 +226,37 @@ cargo test
 ```
 
 There is also a `python_tests/` directory with HTTP smoke tests; activate your preferred Python environment and run `pytest` if you modify the HTTP surface.
+
+### Responses CLI
+
+Need a manual multi-turn sanity check against the streaming Responses bridge? Use the lightweight helper:
+
+```bash
+ROUTIIUM_BASE=http://127.0.0.1:8088 \
+python python_tests/chat_cli.py --model gpt-4.1-nano
+```
+
+The script loads `.env`, calls `ROUTIIUM_BASE/keys/generate` (unless you pass `ROUTIIUM_ACCESS_TOKEN`), then streams Responses API calls through `ROUTIIUM_BASE/v1/responses` using the official OpenAI SDK. Commands: `/reset` to clear the conversation, `/exit` to quit.
+
+Need to automate the smoke test? `python_tests/run_chat_cli_e2e.sh` bootstraps the Python env, (optionally) builds Routiium, launches the proxy, feeds a canned prompt into `chat_cli.py`, and tears things down when finished:
+
+```bash
+cd python_tests
+./run_chat_cli_e2e.sh --message "ping" --model gpt-4.1-nano
+```
+
+Use `--reuse-server` to point at an already running proxy or `--transcript logs/chat_cli.txt` to archive the captured conversation.
+
+### Key generator CLI
+
+Need to mint managed credentials without crafting curl payloads? Use the bundled helper:
+
+```bash
+ROUTIIUM_BASE=http://127.0.0.1:8088 \
+python scripts/generate_api_key.py \
+  --label demo-session \
+  --ttl-seconds 86400 \
+  --scope inference
+```
+
+The script loads `.env`, hits `/keys/generate`, and prints either a friendly summary or `--json` output so you can pipe the token elsewhere. Use `--expires-at 2024-12-31T23:59:59Z` to pin an exact cutoff or add multiple `--scope` flags to match your policy. The bearer string is shown only once—store it securely.

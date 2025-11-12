@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  routiium:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: routiium:local
+    env_file:
+      - .env
+    environment:
+      BIND_ADDR: "0.0.0.0:8088"
+      ROUTIIUM_SLED_PATH: "/data/keys.db"
+      OPENAI_BASE_URL: "${OPENAI_BASE_URL:-https://api.openai.com/v1}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      ROUTIIUM_BACKENDS: "${ROUTIIUM_BACKENDS:-}"
+      ROUTIIUM_ROUTER_URL: "${ROUTIIUM_ROUTER_URL:-}"
+    ports:
+      - "${ROUTIIUM_PORT:-8088}:8088"
+    volumes:
+      - routiium-data:/data
+    restart: unless-stopped
+
+volumes:
+  routiium-data:

@@ -69,7 +69,7 @@ fn should_run_integration_tests() -> bool {
         eprintln!("    Example .env:");
         eprintln!("      OPENAI_BASE_URL=https://api.openai.com/v1");
         eprintln!("      OPENAI_API_KEY=sk-...");
-        eprintln!("      MODEL=gpt-4o-mini");
+        eprintln!("      MODEL=gpt-4.1-nano");
         return false;
     }
 

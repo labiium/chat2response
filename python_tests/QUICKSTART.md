@@ -38,7 +38,7 @@ Ensure `../.env` contains:
 OPENAI_API_KEY=your-openai-api-key-here
 OPENAI_BASE_URL=https://api.openai.com/v1
 ROUTIIUM_BASE=http://127.0.0.1:8099
-MODEL=gpt-4o-mini
+MODEL=gpt-4.1-nano
 ```
 
 ## Running Tests
@@ -82,6 +82,17 @@ cargo run --release
 # Run tests
 pytest tests/ -v -s
 ```
+
+## Automated Chat CLI Smoke Test
+
+Need a quick end-to-end sanity check for the lightweight chat client without running the full pytest suite? Use the helper script:
+
+```bash
+cd python_tests
+./run_chat_cli_e2e.sh --message "Hello Routiium!" --model gpt-4.1-nano
+```
+
+The script bootstraps the Python environment, (optionally) builds Routiium, starts the proxy, feeds the prompt through `chat_cli.py`, and shuts everything down when done. Pass `--reuse-server` to target an already running proxy or `--transcript logs/chat_cli.txt` to archive the output.
 
 ## Running Specific Tests
 
@@ -304,10 +315,10 @@ jobs:
 
 ## Cost Estimates
 
-Using `gpt-4o-mini` (default model):
+Using `gpt-4.1-nano` (default model):
 - Full test suite: ~$0.08-0.21 per run
 - Chat completions only: ~$0.02-0.05
 - Responses API only: ~$0.04-0.10
 - Vision tests only: ~$0.03-0.06
 
-**Recommended:** Use `gpt-4o-mini` for cost-effective testing.
+**Recommended:** Use `gpt-4.1-nano` for cost-effective testing.

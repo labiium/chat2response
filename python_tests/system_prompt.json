@@ -7,6 +7,7 @@
     "responses": "System prompt: responses injection"
   },
   "per_model": {
-    "gpt-4o-mini": "System prompt: model gpt-4o-mini"
+    "gpt-4o-mini": "System prompt: model gpt-4o-mini",
+    "gpt-5-nano": "System prompt: model gpt-5-nano"
   }
 }

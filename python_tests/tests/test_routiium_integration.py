@@ -12,14 +12,14 @@ Time complexity: O(n) per test where n is response size
 Space complexity: O(n) for storing responses in memory
 """
 
-import os
-import pytest
-import time
 import json
-import requests
-from openai import OpenAI, OpenAIError
-from dotenv import load_dotenv
+import os
+import time
 
+import pytest
+import requests
+from dotenv import load_dotenv
+from openai import OpenAI, OpenAIError
 
 # Load environment variables from .env file
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "../../.env"))
@@ -76,7 +76,7 @@ def openai_client():
 def test_model():
     """Get the model to use for testing from environment or use default."""
     chat_model = os.getenv("CHAT_MODEL")
-    model = os.getenv("MODEL", "gpt-4o-mini")
+    model = os.getenv("MODEL", "gpt-4.1-nano")
     if chat_model:
         return chat_model
     return model
@@ -125,9 +125,7 @@ class TestChatCompletions:
 
         print(f"\n✓ Chat completion response: {choice.message.content[:100]}")
 
-    def test_streaming_chat_completion(
-        self, routiium_client, test_model, test_prompt
-    ):
+    def test_streaming_chat_completion(self, routiium_client, test_model, test_prompt):
         """
         Test streaming chat completion through routiium.
 
@@ -161,9 +159,7 @@ class TestChatCompletions:
             f"\n✓ Streaming chat completion: {len(chunks)} chunks, content: {full_content[:100]}"
         )
 
-    def test_chat_completion_with_system_message(
-        self, routiium_client, test_model
-    ):
+    def test_chat_completion_with_system_message(self, routiium_client, test_model):
         """
         Test chat completion with system message.
 
@@ -249,7 +245,9 @@ class TestChatCompletions:
                 messages=[{"role": "user", "content": "Say hello"}],
                 stream=False,
             )
-            print(f"\n✓ Temperature test (default): {response.choices[0].message.content[:100]}")
+            print(
+                f"\n✓ Temperature test (default): {response.choices[0].message.content[:100]}"
+            )
         else:
             response = routiium_client.chat.completions.create(
                 model=test_model,
@@ -257,7 +255,9 @@ class TestChatCompletions:
                 temperature=0.7,
                 stream=False,
             )
-            print(f"\n✓ Temperature test (0.7): {response.choices[0].message.content[:100]}")
+            print(
+                f"\n✓ Temperature test (0.7): {response.choices[0].message.content[:100]}"
+            )
 
         assert response.choices[0].message.content is not None
 
@@ -271,9 +271,7 @@ class TestResponsesAPI:
     Responses API, which has a different structure than chat completions.
     """
 
-    def test_basic_responses_endpoint(
-        self, routiium_client, test_model, test_prompt
-    ):
+    def test_basic_responses_endpoint(self, routiium_client, test_model, test_prompt):
         """
         Test basic non-streaming request to /v1/responses endpoint using native SDK.
 
@@ -313,9 +311,7 @@ class TestResponsesAPI:
             f"  Usage: {response.usage.input_tokens} input + {response.usage.output_tokens} output tokens"
         )
 
-    def test_responses_endpoint_with_system_message(
-        self, routiium_client, test_model
-    ):
+    def test_responses_endpoint_with_system_message(self, routiium_client, test_model):
         """
         Test /v1/responses endpoint with system message using native SDK.
 
@@ -529,9 +525,7 @@ class TestResponsesAPI:
             print(f"\n✓ Responses API tool test: Model responded with text")
             print(f"  Response: {response.output_text[:100]}")
 
-    def test_responses_endpoint_with_multiple_tools(
-        self, routiium_client, test_model
-    ):
+    def test_responses_endpoint_with_multiple_tools(self, routiium_client, test_model):
         """
         Test /v1/responses endpoint with multiple tool definitions using native SDK.
 
@@ -669,7 +663,14 @@ class TestResponsesAPI:
 
         # Check if model supports vision
         # gpt-5-nano supports multimodal/vision via Responses API
-        vision_capable_models = ["gpt-4o", "gpt-4o-mini", "gpt-4-vision", "gpt-4-turbo", "gpt-5-nano", "gpt-5"]
+        vision_capable_models = [
+            "gpt-4o",
+            "gpt-4o-mini",
+            "gpt-4-vision",
+            "gpt-4-turbo",
+            "gpt-5-nano",
+            "gpt-5",
+        ]
         if not any(vm in test_model.lower() for vm in vision_capable_models):
             pytest.skip(f"Model {test_model} may not support vision via Responses API")
 
@@ -703,9 +704,7 @@ class TestResponsesAPI:
         print(f"\n✓ Vision/image input test: {response.output_text[:150]}")
         print(f"  Image analyzed: {image_url[:60]}...")
 
-    def test_responses_endpoint_vision_with_base64(
-        self, routiium_client, test_model
-    ):
+    def test_responses_endpoint_vision_with_base64(self, routiium_client, test_model):
         """
         Test /v1/responses endpoint with base64-encoded images using native SDK.
 
@@ -717,7 +716,14 @@ class TestResponsesAPI:
         Note: Uses a minimal 1x1 red pixel for testing
         """
         # gpt-5-nano supports multimodal/vision via Responses API
-        vision_capable_models = ["gpt-4o", "gpt-4o-mini", "gpt-4-vision", "gpt-4-turbo", "gpt-5-nano", "gpt-5"]
+        vision_capable_models = [
+            "gpt-4o",
+            "gpt-4o-mini",
+            "gpt-4-vision",
+            "gpt-4-turbo",
+            "gpt-5-nano",
+            "gpt-5",
+        ]
         if not any(vm in test_model.lower() for vm in vision_capable_models):
             pytest.skip(f"Model {test_model} may not support vision via Responses API")
 
@@ -745,9 +751,7 @@ class TestResponsesAPI:
 
         print(f"\n✓ Base64 image test: {response.output_text[:100]}")
 
-    def test_responses_endpoint_vision_streaming(
-        self, routiium_client, test_model
-    ):
+    def test_responses_endpoint_vision_streaming(self, routiium_client, test_model):
         """
         Test streaming mode with vision inputs on /v1/responses endpoint using native SDK.
 
@@ -760,7 +764,14 @@ class TestResponsesAPI:
         Space complexity: O(n) for chunk storage
         """
         # gpt-5-nano supports multimodal/vision via Responses API
-        vision_capable_models = ["gpt-4o", "gpt-4o-mini", "gpt-4-vision", "gpt-4-turbo", "gpt-5-nano", "gpt-5"]
+        vision_capable_models = [
+            "gpt-4o",
+            "gpt-4o-mini",
+            "gpt-4-vision",
+            "gpt-4-turbo",
+            "gpt-5-nano",
+            "gpt-5",
+        ]
         if not any(vm in test_model.lower() for vm in vision_capable_models):
             pytest.skip(f"Model {test_model} may not support vision via Responses API")
 
@@ -809,9 +820,7 @@ class TestResponsesAPI:
                 f"\n✓ Vision streaming: {len(chunks)} chunks received (model may not stream deltas for vision)"
             )
 
-    def test_responses_endpoint_vision_with_tools(
-        self, routiium_client, test_model
-    ):
+    def test_responses_endpoint_vision_with_tools(self, routiium_client, test_model):
         """
         Test combining vision and tool calling in single request using native SDK.
 
@@ -824,7 +833,14 @@ class TestResponsesAPI:
         Space complexity: O(n) for response storage
         """
         # gpt-5-nano supports multimodal/vision via Responses API
-        vision_capable_models = ["gpt-4o", "gpt-4o-mini", "gpt-4-vision", "gpt-4-turbo", "gpt-5-nano", "gpt-5"]
+        vision_capable_models = [
+            "gpt-4o",
+            "gpt-4o-mini",
+            "gpt-4-vision",
+            "gpt-4-turbo",
+            "gpt-5-nano",
+            "gpt-5",
+        ]
         if not any(vm in test_model.lower() for vm in vision_capable_models):
             pytest.skip(f"Model {test_model} may not support vision via Responses API")
 
@@ -886,9 +902,7 @@ class TestResponsesAPI:
                 f"  Response: {response.output_text[:100] if response.output_text else 'N/A'}"
             )
 
-    def test_responses_endpoint_latency(
-        self, routiium_client, test_model, test_prompt
-    ):
+    def test_responses_endpoint_latency(self, routiium_client, test_model, test_prompt):
         """
         Test and measure response latency for /v1/responses endpoint using native SDK.
 
@@ -915,9 +929,7 @@ class TestResponsesAPI:
 
         print(f"\n✓ Responses API endpoint latency: {latency_ms:.2f}ms")
 
-    def test_responses_endpoint_reasoning_content(
-        self, routiium_client, test_model
-    ):
+    def test_responses_endpoint_reasoning_content(self, routiium_client, test_model):
         """
         Test /v1/responses endpoint with reasoning_content for reasoning models.
 
@@ -958,22 +970,24 @@ class TestResponsesAPI:
         if response.usage and hasattr(response.usage, "reasoning_tokens"):
             if response.usage.reasoning_tokens and response.usage.reasoning_tokens > 0:
                 has_reasoning_tokens = True
-                print(f"\n✓ Reasoning tokens detected: {response.usage.reasoning_tokens}")
+                print(
+                    f"\n✓ Reasoning tokens detected: {response.usage.reasoning_tokens}"
+                )
 
         if has_reasoning:
             print(f"✓ Reasoning content detected in response")
             if reasoning_content:
                 print(f"  Reasoning: {reasoning_content[0][:100]}...")
         else:
-            print(f"✓ No explicit reasoning content (model may not support or include it)")
+            print(
+                f"✓ No explicit reasoning content (model may not support or include it)"
+            )
 
         # Validate that we got a valid response
         assert response.output_text is not None
         print(f"  Final answer: {response.output_text[:100]}")
 
-    def test_responses_endpoint_reasoning_streaming(
-        self, routiium_client, test_model
-    ):
+    def test_responses_endpoint_reasoning_streaming(self, routiium_client, test_model):
         """
         Test streaming mode with reasoning content for reasoning models.
 
@@ -1211,13 +1225,46 @@ class TestRouterIntegration:
 class TestSystemPromptInjection:
     """Validate that configured system prompts are injected into conversions."""
 
-    def test_convert_injects_system_prompt(self, test_model):
+    @staticmethod
+    def _system_prompt_config_path() -> str:
+        default_path = os.path.join(
+            os.path.dirname(__file__),
+            "../system_prompt.json",
+        )
+        return os.getenv("SYSTEM_PROMPT_CONFIG_PATH", default_path)
+
+    @classmethod
+    def _expected_prompt_for_model(cls, model: str) -> str | None:
+        config_path = cls._system_prompt_config_path()
+        try:
+            with open(config_path, "r", encoding="utf-8") as fh:
+                config = json.load(fh)
+        except FileNotFoundError:
+            return None
+
+        if not config.get("enabled", True):
+            return None
+
+        per_model = config.get("per_model", {})
+        if model in per_model:
+            return per_model[model]
+
+        per_api = config.get("per_api", {})
+        if "responses" in per_api:
+            return per_api["responses"]
+
+        return config.get("global")
+
+    def test_convert_injects_system_prompt(self):
         base_url = os.getenv("ROUTIIUM_BASE", "http://127.0.0.1:8099")
+        model = os.getenv("SYSTEM_PROMPT_TEST_MODEL", "gpt-5-nano")
+        expected_prompt = self._expected_prompt_for_model(model)
+        if not expected_prompt:
+            pytest.skip("System prompt configuration missing expected prompt")
+
         payload = {
-            "model": test_model,
-            "messages": [
-                {"role": "user", "content": "Briefly respond with 'ok'."}
-            ],
+            "model": model,
+            "messages": [{"role": "user", "content": "Briefly respond with 'ok'."}],
         }
 
         response = requests.post(
@@ -1251,7 +1298,7 @@ class TestSystemPromptInjection:
         else:
             pytest.skip("Unexpected system prompt content structure")
 
-        assert injected_text == "System prompt: model gpt-4o-mini"
+        assert injected_text == expected_prompt
 
 
 class TestMCPIntegration:
@@ -1261,9 +1308,7 @@ class TestMCPIntegration:
         base_url = os.getenv("ROUTIIUM_BASE", "http://127.0.0.1:8099")
         payload = {
             "model": test_model,
-            "messages": [
-                {"role": "user", "content": "List available tools."}
-            ],
+            "messages": [{"role": "user", "content": "List available tools."}],
         }
 
         response = requests.post(

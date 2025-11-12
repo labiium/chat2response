@@ -755,6 +755,7 @@ pub fn to_responses_request(
         stream: src.stream,
         // Stateful conversation id (optional)
         conversation,
+        previous_response_id: None,
     }
 }
 

@@ -26,6 +26,17 @@ use tracing::warn;
 pub struct ConvertQuery {
     /// Optional Responses conversation id to make the call stateful.
     pub conversation_id: Option<String>,
+    /// Optional pointer to a previous Responses id (state chaining preview).
+    pub previous_response_id: Option<String>,
+}
+
+/// Optional state hints accepted on `/v1/chat/completions`.
+#[derive(Debug, Deserialize)]
+pub struct ChatQuery {
+    /// When provided, converted requests will set `conversation`.
+    pub conversation_id: Option<String>,
+    /// Forwarded as `previous_response_id` for Responses-compatible upstreams.
+    pub previous_response_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -198,6 +209,132 @@ fn insert_route_headers(builder: &mut HttpResponseBuilder, plan: &RoutePlan, res
     }
     if let Some(content_used) = plan.content_used.as_deref() {
         builder.insert_header(("x-content-used", content_used.to_string()));
+    }
+}
+
+fn extract_conversation_id(value: &serde_json::Value) -> Option<String> {
+    use serde_json::Value;
+
+    if let Some(conv) = value.get("conversation") {
+        match conv {
+            Value::String(s) if !s.trim().is_empty() => return Some(s.clone()),
+            Value::Object(map) => {
+                if let Some(id) = map.get("id").and_then(|v| v.as_str()) {
+                    if !id.trim().is_empty() {
+                        return Some(id.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    value
+        .get("conversation_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            value
+                .get("previous_response_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+}
+
+fn extract_previous_response_id(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("previous_response_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+fn convert_chat_payload_to_responses(
+    payload: &serde_json::Value,
+    conversation_hint: Option<String>,
+    previous_response_hint: Option<String>,
+) -> Option<serde_json::Value> {
+    let mut conversation = conversation_hint.or_else(|| extract_conversation_id(payload));
+    if let Some(conv) = conversation.as_ref() {
+        if conv.trim().is_empty() {
+            conversation = None;
+        }
+    }
+
+    let mut previous_response =
+        previous_response_hint.or_else(|| extract_previous_response_id(payload));
+    if let Some(prev) = previous_response.as_ref() {
+        if prev.trim().is_empty() {
+            previous_response = None;
+        }
+    }
+
+    serde_json::from_value::<ChatCompletionRequest>(payload.clone())
+        .ok()
+        .and_then(|req| {
+            let mut responses_req = to_responses_request(&req, conversation);
+            if let Some(prev) = previous_response {
+                responses_req.previous_response_id = Some(prev);
+            }
+            serde_json::to_value(responses_req).ok()
+        })
+}
+
+fn strip_responses_only_fields(payload: &mut serde_json::Value) {
+    if let Some(obj) = payload.as_object_mut() {
+        obj.remove("conversation");
+        obj.remove("conversation_id");
+        obj.remove("previous_response_id");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn extract_conversation_supports_object_form() {
+        let payload = json!({
+            "conversation": { "id": "conv-body" },
+            "previous_response_id": "resp-body"
+        });
+        assert_eq!(
+            extract_conversation_id(&payload),
+            Some("conv-body".to_string())
+        );
+    }
+
+    #[test]
+    fn convert_chat_payload_prefers_query_hints() {
+        let payload = json!({
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "conversation": {"id": "conv-body"},
+            "previous_response_id": "resp-body"
+        });
+        let converted = convert_chat_payload_to_responses(
+            &payload,
+            Some("conv-query".into()),
+            Some("resp-query".into()),
+        )
+        .expect("conversion succeeds");
+        assert_eq!(converted["conversation"], "conv-query");
+        assert_eq!(converted["previous_response_id"], "resp-query");
+    }
+
+    #[test]
+    fn strip_responses_fields_removes_all_supported_keys() {
+        let mut payload = json!({
+            "model": "gpt-4o-mini",
+            "messages": [],
+            "conversation": {"id": "conv"},
+            "conversation_id": "conv",
+            "previous_response_id": "resp"
+        });
+        strip_responses_only_fields(&mut payload);
+        assert!(payload.get("conversation").is_none());
+        assert!(payload.get("conversation_id").is_none());
+        assert!(payload.get("previous_response_id").is_none());
     }
 }
 
@@ -802,13 +939,17 @@ async fn convert(
 
     let system_prompt_guard = state.system_prompt_config.read().await;
 
-    let converted = crate::conversion::to_responses_request_with_mcp_and_prompt(
+    let mut converted = crate::conversion::to_responses_request_with_mcp_and_prompt(
         &body,
         query.conversation_id.clone(),
         mcp_manager_guard.as_deref(),
         Some(&*system_prompt_guard),
     )
     .await;
+
+    if let Some(prev) = query.previous_response_id.clone() {
+        converted.previous_response_id = Some(prev);
+    }
 
     web::Json(converted)
 }
@@ -817,9 +958,13 @@ async fn convert(
 async fn chat_completions_passthrough(
     state: web::Data<AppState>,
     req: HttpRequest,
+    query: web::Query<ChatQuery>,
     body: web::Json<serde_json::Value>,
 ) -> impl Responder {
     let mut body = body.into_inner();
+    let query = query.into_inner();
+    let conversation_hint = query.conversation_id.filter(|s| !s.trim().is_empty());
+    let previous_response_hint = query.previous_response_id.filter(|s| !s.trim().is_empty());
 
     // Apply system prompt injection if configured
     let system_prompt_guard = state.system_prompt_config.read().await;
@@ -961,13 +1106,6 @@ async fn chat_completions_passthrough(
     };
     let base = resolution.base_url.trim_end_matches('/');
 
-    let convert_chat_to_responses = |payload: &serde_json::Value| -> Option<serde_json::Value> {
-        serde_json::from_value::<ChatCompletionRequest>(payload.clone())
-            .ok()
-            .map(|req| to_responses_request(&req, None))
-            .and_then(|req| serde_json::to_value(req).ok())
-    };
-
     let expects_responses = resolution
         .plan
         .as_ref()
@@ -980,11 +1118,17 @@ async fn chat_completions_passthrough(
 
         let mut outbound_body = body.clone();
         if expects_responses {
-            if let Some(converted) = convert_chat_to_responses(&outbound_body) {
+            if let Some(converted) = convert_chat_payload_to_responses(
+                &outbound_body,
+                conversation_hint.clone(),
+                previous_response_hint.clone(),
+            ) {
                 outbound_body = converted;
             } else {
                 warn!("Failed to convert chat payload to Responses request for router plan");
             }
+        } else {
+            strip_responses_only_fields(&mut outbound_body);
         }
 
         let real_url = format!("{}/{}", base, endpoint);
@@ -1047,11 +1191,17 @@ async fn chat_completions_passthrough(
     } else {
         let mut outbound_body = body.clone();
         if expects_responses {
-            if let Some(converted) = convert_chat_to_responses(&outbound_body) {
+            if let Some(converted) = convert_chat_payload_to_responses(
+                &outbound_body,
+                conversation_hint.clone(),
+                previous_response_hint.clone(),
+            ) {
                 outbound_body = converted;
             } else {
                 warn!("Failed to convert chat payload to Responses request for router plan");
             }
+        } else {
+            strip_responses_only_fields(&mut outbound_body);
         }
 
         let real_url = format!("{}/{}", base, endpoint);

@@ -79,6 +79,23 @@ cleanup() {
     lsof -ti:8099 | xargs kill -9 2>/dev/null || true
 }
 
+# Force integration tests to talk to the server we spin up locally (on BIND_ADDR).
+ensure_local_test_base() {
+    local bind_addr="${BIND_ADDR:-0.0.0.0:8099}"
+    local port="${bind_addr##*:}"
+
+    if [[ ! $bind_addr =~ :[0-9]+$ ]]; then
+        port="8099"
+    fi
+
+    local desired_base="http://127.0.0.1:${port}"
+
+    if [[ "${ROUTIIUM_BASE:-}" != "$desired_base" ]]; then
+        export ROUTIIUM_BASE="$desired_base"
+        log_info "Overriding ROUTIIUM_BASE for tests to $ROUTIIUM_BASE"
+    fi
+}
+
 # Trap EXIT to ensure cleanup runs
 trap cleanup EXIT INT TERM
 
@@ -201,6 +218,8 @@ start_routiium_server() {
         fi
     done < "$ENV_FILE"
 
+    ensure_local_test_base
+
     # Optional configuration files
     CLI_ARGS=()
 
@@ -278,6 +297,8 @@ run_tests() {
             export "$key=$value"
         fi
     done < "$ENV_FILE"
+
+    ensure_local_test_base
 
     # Run pytest with verbose output
     if pytest tests/ -v -s --tb=short; then

@@ -19,10 +19,13 @@
 //! - Cache hit: ~sub-100µs
 
 use anyhow::Result;
+use futures::executor::block_on as futures_block_on;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::task;
 
 /// Mode for upstream API (Responses or Chat Completions)
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1016,11 +1019,7 @@ impl HttpRouterClient {
 
 impl RouterClient for HttpRouterClient {
     fn plan(&self, req: &RouteRequest) -> Result<RoutePlan, RouteError> {
-        // Use tokio runtime to execute async request
-        let runtime = tokio::runtime::Handle::try_current()
-            .map_err(|e| RouteError::RouterError(format!("No tokio runtime: {}", e)))?;
-
-        runtime.block_on(self.plan_async(req)).map_err(|e| match e {
+        block_on_router_future(self.plan_async(req)).map_err(|e| match e {
             RouteError::NetworkError(_) => RouteError::Unavailable(e.to_string()),
             other => other,
         })
@@ -1041,10 +1040,18 @@ impl RouterClient for HttpRouterClient {
     }
 
     fn get_catalog(&self) -> Result<ModelCatalog, RouteError> {
-        let runtime = tokio::runtime::Handle::try_current()
-            .map_err(|e| RouteError::RouterError(format!("No tokio runtime: {}", e)))?;
+        block_on_router_future(self.get_catalog_async())
+    }
+}
 
-        runtime.block_on(self.get_catalog_async())
+fn block_on_router_future<F, T>(future: F) -> Result<T, RouteError>
+where
+    F: Future<Output = Result<T, RouteError>>,
+{
+    if tokio::runtime::Handle::try_current().is_ok() {
+        task::block_in_place(|| futures_block_on(future))
+    } else {
+        futures_block_on(future)
     }
 }
 

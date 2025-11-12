@@ -11,12 +11,12 @@ Time complexity: O(n) per test where n is response size
 Space complexity: O(n) for storing responses
 """
 
-import os
 import json
-import pytest
-from openai import OpenAI
-from dotenv import load_dotenv
+import os
 
+import pytest
+from dotenv import load_dotenv
+from openai import OpenAI
 
 # Load environment variables from .env file
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "../../.env"))
@@ -53,7 +53,7 @@ def test_model():
     chat_model = os.getenv("CHAT_MODEL")
     if chat_model:
         return chat_model
-    return os.getenv("MODEL", "gpt-4o-mini")
+    return os.getenv("MODEL", "gpt-4.1-nano")
 
 
 @pytest.fixture

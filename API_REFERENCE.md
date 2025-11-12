@@ -125,6 +125,7 @@ Auth: None
 
 Query parameters:
 - conversation_id (optional): If provided, used in conversion to make the call stateful for the Responses API.
+- previous_response_id (optional): Injects `previous_response_id` into the resulting Responses payload for state-linked turns.
 
 Body:
 - A valid Chat Completions JSON request.
@@ -150,6 +151,10 @@ Pass-through for native Chat Completions requests. Optionally injects system pro
 Auth:
 - Managed mode: Authorization: Bearer sk_<id>.<secret> (validated; upstream API key supplied by server).
 - Passthrough mode: Authorization: Bearer <provider_api_key> (forwarded upstream).
+
+Query parameters:
+- `conversation_id` (optional) – forces the converted Responses payload to include this conversation id when the routed upstream expects `/v1/responses`.
+- `previous_response_id` (optional) – forwarded as `previous_response_id` for stateful Responses calls.
 
 Body:
 - Standard Chat Completions JSON.
