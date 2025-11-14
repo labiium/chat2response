@@ -44,6 +44,7 @@ Note:
 #![forbid(unsafe_code)]
 
 use anyhow::{anyhow, Result};
+use tracing::warn;
 
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -522,6 +523,7 @@ impl AuthManager {
         }
         if let Some(exp) = rec.expires_at {
             if now >= exp {
+                warn!("API key {} expired (now={}, expires_at={})", rec.id, now, exp);
                 return Verification::Expired { expired_at: exp };
             }
         }

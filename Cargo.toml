@@ -65,6 +65,7 @@ redis = "0.24"
 
 [dev-dependencies]
 tempfile = "3"
+axum = "0.7"
 
 [features]
 default = ["sled"]

@@ -15,10 +15,12 @@ services:
       OPENAI_API_KEY: "${OPENAI_API_KEY}"
       ROUTIIUM_BACKENDS: "${ROUTIIUM_BACKENDS:-}"
       ROUTIIUM_ROUTER_URL: "${ROUTIIUM_ROUTER_URL:-}"
+    command: ["--system-prompt-config=/app/system_prompt.json"]
     ports:
       - "${ROUTIIUM_PORT:-8088}:8088"
     volumes:
       - routiium-data:/data
+      - ./system_prompt.json:/app/system_prompt.json:ro
     restart: unless-stopped
 
 volumes:

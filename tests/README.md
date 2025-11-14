@@ -13,6 +13,7 @@ This directory contains comprehensive tests for the Chat Completions ↔ Respons
 | `system_prompt_tests.rs` | 9 | System prompt injection tests |
 | `reload_tests.rs` | 7 | Runtime configuration reload tests |
 | `server_build.rs` | 2 | Server initialization tests |
+| `router_integration.rs` | 3 | Remote Router contract (Schema 1.1) integration tests |
 
 **Total: 78 tests**
 
@@ -101,6 +102,14 @@ Validates support for reasoning-capable models (o1, o3, GPT-5).
 **Key tests:**
 - `test_reasoning_model_identification` - Model name detection
 - `test_reasoning_model_supports_all_parameters` - Full param support
+
+### Router Integration
+Verifies the remote Router interface, caching, and header propagation.
+
+**Key tests:**
+- `router_headers_are_forwarded` - Ensures Schema 1.1 metadata makes it to HTTP responses.
+- `router_strict_mode_surfaces_error` - Strict mode surfaces Router errors instead of falling back.
+- `router_plan_is_cached_between_requests` - Confirms `ROUTIIUM_CACHE_TTL_MS` caching avoids redundant Router calls.
 
 ## Test Coverage
 

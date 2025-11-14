@@ -79,7 +79,7 @@ fn router_strict_mode() -> bool {
     )
 }
 
-fn resolve_upstream(
+async fn resolve_upstream(
     state: &AppState,
     api: &str,
     body: &serde_json::Value,
@@ -91,7 +91,7 @@ fn resolve_upstream(
         if !requested_model.is_empty() {
             let privacy_mode = router_privacy_mode_from_env();
             let route_request = extract_route_request(requested_model, api, body, privacy_mode);
-            match router.plan(&route_request) {
+            match router.plan(&route_request).await {
                 Ok(plan) => {
                     let model_id = plan.upstream.model_id.clone();
                     return Ok(UpstreamResolution {
@@ -210,6 +210,21 @@ fn insert_route_headers(builder: &mut HttpResponseBuilder, plan: &RoutePlan, res
     if let Some(content_used) = plan.content_used.as_deref() {
         builder.insert_header(("x-content-used", content_used.to_string()));
     }
+}
+
+fn router_error_response(
+    status: http::StatusCode,
+    message: &str,
+    plan: Option<&RoutePlan>,
+    resolved_model: &str,
+) -> HttpResponse {
+    let mut builder =
+        HttpResponse::build(actix_web::http::StatusCode::from_u16(status.as_u16()).unwrap());
+    if let Some(plan) = plan {
+        insert_route_headers(&mut builder, plan, resolved_model);
+    }
+    let body = serde_json::json!({ "error": { "message": message } });
+    builder.json(body)
 }
 
 fn extract_conversation_id(value: &serde_json::Value) -> Option<String> {
@@ -636,7 +651,7 @@ async fn responses_passthrough(
         .unwrap_or(false);
 
     let client = &state.http;
-    let resolution = match resolve_upstream(&state, "responses", &body) {
+    let resolution = match resolve_upstream(&state, "responses", &body).await {
         Ok(res) => res,
         Err(err) => {
             return error_response(
@@ -770,7 +785,14 @@ async fn responses_passthrough(
                 }
                 response.streaming(stream)
             }
-            Err(e) => error_response(http::StatusCode::BAD_GATEWAY, &e.to_string()),
+            Err(e) => {
+                return router_error_response(
+                    http::StatusCode::BAD_GATEWAY,
+                    &e.to_string(),
+                    resolution.plan.as_ref(),
+                    &resolution.model_id,
+                );
+            }
         }
     } else {
         let mut outbound_body = effective_body.clone();
@@ -814,7 +836,14 @@ async fn responses_passthrough(
                 }
                 builder.body(bytes)
             }
-            Err(e) => error_response(http::StatusCode::BAD_GATEWAY, &e.to_string()),
+            Err(e) => {
+                return router_error_response(
+                    http::StatusCode::BAD_GATEWAY,
+                    &e.to_string(),
+                    resolution.plan.as_ref(),
+                    &resolution.model_id,
+                );
+            }
         }
     }
 }
@@ -1065,7 +1094,7 @@ async fn chat_completions_passthrough(
         .unwrap_or(false);
 
     let client = &state.http;
-    let resolution = match resolve_upstream(&state, "chat", &body) {
+    let resolution = match resolve_upstream(&state, "chat", &body).await {
         Ok(res) => res,
         Err(err) => {
             return error_response(
@@ -1186,7 +1215,14 @@ async fn chat_completions_passthrough(
                 }
                 response.streaming(stream)
             }
-            Err(e) => error_response(http::StatusCode::BAD_GATEWAY, &e.to_string()),
+            Err(e) => {
+                return router_error_response(
+                    http::StatusCode::BAD_GATEWAY,
+                    &e.to_string(),
+                    resolution.plan.as_ref(),
+                    &resolution.model_id,
+                );
+            }
         }
     } else {
         let mut outbound_body = body.clone();
@@ -1245,7 +1281,14 @@ async fn chat_completions_passthrough(
                 }
                 builder.body(bytes)
             }
-            Err(e) => error_response(http::StatusCode::BAD_GATEWAY, &e.to_string()),
+            Err(e) => {
+                return router_error_response(
+                    http::StatusCode::BAD_GATEWAY,
+                    &e.to_string(),
+                    resolution.plan.as_ref(),
+                    &resolution.model_id,
+                );
+            }
         }
     }
 }

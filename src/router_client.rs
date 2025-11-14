@@ -19,13 +19,12 @@
 //! - Cache hit: ~sub-100µs
 
 use anyhow::Result;
-use futures::executor::block_on as futures_block_on;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::task;
+use tokio::runtime::Handle;
 
 /// Mode for upstream API (Responses or Chat Completions)
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -853,9 +852,10 @@ pub enum RouteError {
 }
 
 /// Main RouterClient trait - thin, fast decision interface
+#[async_trait]
 pub trait RouterClient: Send + Sync {
     /// Get routing plan for request
-    fn plan(&self, req: &RouteRequest) -> Result<RoutePlan, RouteError>;
+    async fn plan(&self, req: &RouteRequest) -> Result<RoutePlan, RouteError>;
 
     /// Send feedback after request (optional, async)
     fn feedback(&self, fb: &RouteFeedback) -> Result<(), RouteError> {
@@ -869,7 +869,7 @@ pub trait RouterClient: Send + Sync {
     }
 
     /// Get model catalog (optional, cached)
-    fn get_catalog(&self) -> Result<ModelCatalog, RouteError> {
+    async fn get_catalog(&self) -> Result<ModelCatalog, RouteError> {
         Err(RouteError::RouterError("Catalog not supported".to_string()))
     }
 }
@@ -1017,16 +1017,17 @@ impl HttpRouterClient {
     }
 }
 
+#[async_trait]
 impl RouterClient for HttpRouterClient {
-    fn plan(&self, req: &RouteRequest) -> Result<RoutePlan, RouteError> {
-        block_on_router_future(self.plan_async(req)).map_err(|e| match e {
+    async fn plan(&self, req: &RouteRequest) -> Result<RoutePlan, RouteError> {
+        self.plan_async(req).await.map_err(|e| match e {
             RouteError::NetworkError(_) => RouteError::Unavailable(e.to_string()),
             other => other,
         })
     }
 
     fn feedback(&self, fb: &RouteFeedback) -> Result<(), RouteError> {
-        let runtime = tokio::runtime::Handle::try_current().ok();
+        let runtime = Handle::try_current().ok();
         if let Some(rt) = runtime {
             // Spawn non-blocking
             let client = self.client.clone();
@@ -1039,19 +1040,8 @@ impl RouterClient for HttpRouterClient {
         Ok(())
     }
 
-    fn get_catalog(&self) -> Result<ModelCatalog, RouteError> {
-        block_on_router_future(self.get_catalog_async())
-    }
-}
-
-fn block_on_router_future<F, T>(future: F) -> Result<T, RouteError>
-where
-    F: Future<Output = Result<T, RouteError>>,
-{
-    if tokio::runtime::Handle::try_current().is_ok() {
-        task::block_in_place(|| futures_block_on(future))
-    } else {
-        futures_block_on(future)
+    async fn get_catalog(&self) -> Result<ModelCatalog, RouteError> {
+        self.get_catalog_async().await
     }
 }
 
@@ -1137,8 +1127,9 @@ impl LocalRouter for LocalPolicyRouter {
     }
 }
 
+#[async_trait]
 impl RouterClient for LocalPolicyRouter {
-    fn plan(&self, req: &RouteRequest) -> Result<RoutePlan, RouteError> {
+    async fn plan(&self, req: &RouteRequest) -> Result<RoutePlan, RouteError> {
         self.plan_local(req)
     }
 }
@@ -1264,8 +1255,9 @@ impl CachedRouterClient {
     }
 }
 
+#[async_trait]
 impl RouterClient for CachedRouterClient {
-    fn plan(&self, req: &RouteRequest) -> Result<RoutePlan, RouteError> {
+    async fn plan(&self, req: &RouteRequest) -> Result<RoutePlan, RouteError> {
         // Check cache first
         let policy_rev = self.inner.policy_revision();
         if let Some(cached_plan) = self.cache.get(req, policy_rev.as_deref()) {
@@ -1273,7 +1265,7 @@ impl RouterClient for CachedRouterClient {
         }
 
         // Cache miss - ask router
-        let plan = self.inner.plan(req)?;
+        let plan = self.inner.plan(req).await?;
 
         // Store in cache
         self.cache.put(req, plan.clone());
@@ -1557,7 +1549,58 @@ fn estimate_tokens(payload: &serde_json::Value) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http::StatusCode;
+    use serde_json::json;
     use std::sync::{Arc, Mutex};
+
+    mod router_stub {
+        use crate as routiium;
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/common/router_stub.rs"
+        ));
+    }
+    use router_stub::{sample_plan, RouterResponseConfig, RouterStub};
+
+    fn sample_route_request(alias: &str) -> RouteRequest {
+        RouteRequest {
+            schema_version: Some("1.1".to_string()),
+            request_id: Some("req_sample".to_string()),
+            trace: None,
+            alias: alias.to_string(),
+            api: "responses".to_string(),
+            privacy_mode: PrivacyMode::FeaturesOnly,
+            content_attestation: Some(ContentAttestation {
+                included: Some("none".to_string()),
+            }),
+            caps: vec!["text".to_string()],
+            stream: false,
+            params: None,
+            plan_token: None,
+            targets: Targets {
+                p95_latency_ms: Some(30000),
+                min_tokens_per_sec: None,
+                reliability_tier: None,
+                legacy_max_cost_usd: None,
+                legacy_max_cost_gbp: None,
+            },
+            budget: None,
+            estimates: Estimates {
+                prompt_tokens: Some(10),
+                max_output_tokens: Some(32),
+                tokenizer_id: Some("auto".to_string()),
+            },
+            conversation: ConversationSignals::default(),
+            org: OrgContext::default(),
+            geo: None,
+            tools: vec![],
+            overrides: None,
+            role: None,
+            task: None,
+            privacy: None,
+            hints: None,
+        }
+    }
 
     #[test]
     fn test_route_request_serialization() {
@@ -1611,8 +1654,8 @@ mod tests {
         assert!(json.contains("responses"));
     }
 
-    #[test]
-    fn test_local_router() {
+    #[tokio::test]
+    async fn test_local_router() {
         let mut aliases = HashMap::new();
         aliases.insert(
             "test-model".to_string(),
@@ -1658,7 +1701,7 @@ mod tests {
             hints: None,
         };
 
-        let plan = router.plan(&req).unwrap();
+        let plan = router.plan(&req).await.unwrap();
         assert_eq!(plan.upstream.model_id, "llama3");
         assert_eq!(plan.upstream.mode, UpstreamMode::Chat);
         assert_eq!(plan.schema_version.as_deref(), Some("1.1"));
@@ -1669,8 +1712,8 @@ mod tests {
         assert_eq!(plan.content_used.as_deref(), Some("none"));
     }
 
-    #[test]
-    fn test_cache() {
+    #[tokio::test]
+    async fn test_cache() {
         let router = LocalPolicyRouter::empty();
         let cached = CachedRouterClient::new(Box::new(router), 1000);
 
@@ -1706,7 +1749,7 @@ mod tests {
         };
 
         // Should fail (no route)
-        assert!(cached.plan(&req).is_err());
+        assert!(cached.plan(&req).await.is_err());
     }
 
     #[test]
@@ -1849,8 +1892,9 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl RouterClient for CountingRouter {
-        fn plan(&self, _req: &RouteRequest) -> Result<RoutePlan, RouteError> {
+        async fn plan(&self, _req: &RouteRequest) -> Result<RoutePlan, RouteError> {
             let call_number = {
                 let mut guard = self.inner.calls.lock().unwrap();
                 *guard += 1;
@@ -1902,8 +1946,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_cached_router_client_uses_cache_until_policy_revision_changes() {
+    #[tokio::test]
+    async fn test_cached_router_client_uses_cache_until_policy_revision_changes() {
         let router = CountingRouter::new(Some("rev1".to_string()));
         let cached_client = CachedRouterClient::new(Box::new(router.clone()), 10_000);
 
@@ -1938,10 +1982,16 @@ mod tests {
             hints: None,
         };
 
-        let first_plan = cached_client.plan(&req).expect("first plan must succeed");
+        let first_plan = cached_client
+            .plan(&req)
+            .await
+            .expect("first plan must succeed");
         assert_eq!(router.call_count(), 1);
 
-        let second_plan = cached_client.plan(&req).expect("cached plan must succeed");
+        let second_plan = cached_client
+            .plan(&req)
+            .await
+            .expect("cached plan must succeed");
         assert_eq!(router.call_count(), 1, "plan should come from cache");
         assert_eq!(first_plan.route_id, second_plan.route_id);
         assert_eq!(first_plan.schema_version.as_deref(), Some("1.1"));
@@ -1954,7 +2004,10 @@ mod tests {
 
         // Changing policy revision should invalidate the cache
         router.set_policy_revision(Some("rev2"));
-        let third_plan = cached_client.plan(&req).expect("plan after policy change");
+        let third_plan = cached_client
+            .plan(&req)
+            .await
+            .expect("plan after policy change");
         assert_eq!(router.call_count(), 2);
         assert_ne!(third_plan.route_id, second_plan.route_id);
     }
@@ -2039,5 +2092,70 @@ mod tests {
         // Different plan token should miss cache due to different key
         base_request.plan_token = Some("plan_b".to_string());
         assert!(cache.get(&base_request, Some("rev1")).is_none());
+    }
+
+    #[tokio::test]
+    async fn http_router_client_plan_round_trip() {
+        let router = RouterStub::start(RouterResponseConfig::Plan(Box::new(sample_plan(
+            "rte_http",
+            "gpt-4o-mini",
+        ))))
+        .await;
+        let config = HttpRouterConfig {
+            url: router.url(),
+            timeout_ms: 200,
+            mtls: false,
+            client: None,
+        };
+        let client = HttpRouterClient::new(config).expect("http router client");
+        let req = sample_route_request("nano-basic");
+
+        let plan = client.plan(&req).await.expect("router plan");
+        assert_eq!(plan.route_id, "rte_http");
+        assert_eq!(plan.upstream.model_id, "gpt-4o-mini");
+        assert_eq!(router.calls(), 1);
+
+        let captured = router.take_requests();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].alias, "nano-basic");
+        assert_eq!(captured[0].schema_version.as_deref(), Some("1.1"));
+    }
+
+    #[tokio::test]
+    async fn http_router_client_propagates_router_errors() {
+        let router = RouterStub::start(RouterResponseConfig::Error {
+            status: StatusCode::CONFLICT,
+            body: json!({
+                "error": {
+                    "code": "ALIAS_UNKNOWN",
+                    "message": "alias not found"
+                }
+            }),
+        })
+        .await;
+
+        let config = HttpRouterConfig {
+            url: router.url(),
+            timeout_ms: 200,
+            mtls: false,
+            client: None,
+        };
+        let client = HttpRouterClient::new(config).expect("http router client");
+        let req = sample_route_request("missing-alias");
+
+        let err = client
+            .plan(&req)
+            .await
+            .expect_err("router should return error");
+        match err {
+            RouteError::RouterError(msg) => {
+                assert!(
+                    msg.contains("409"),
+                    "expected message to mention HTTP status: {msg}"
+                )
+            }
+            other => panic!("unexpected error variant: {:?}", other),
+        }
+        assert_eq!(router.calls(), 1);
     }
 }
